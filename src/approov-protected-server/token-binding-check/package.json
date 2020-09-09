@@ -1,0 +1,17 @@
+{
+  "name": "approov-nodejs-quickstart",
+  "version": "1.0.0",
+  "description": "Approov quickstart for NodeJS without using a framework.",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node hello-server-protected.js"
+  },
+  "author": "paulos@criticalblue.com",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^8.2.0",
+    "jsonwebtoken": "^8.5.1"
+  },
+  "devDependencies": {}
+}
