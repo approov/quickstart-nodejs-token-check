@@ -5,8 +5,8 @@ if (dotenv.error) {
   console.debug('FAILED TO PARSE `.env` FILE | ' + dotenv.error)
 }
 
-// To run in a docker container add to the .env file `HOSTNAME=0.0.0.0`.
-const hostname = dotenv.parsed.HOSTNAME || 'localhost';
+// To run in a docker container add to the .env file `SERVER_HOSTNAME=0.0.0.0`.
+const hostname = dotenv.parsed.SERVER_HOSTNAME || 'localhost';
 
 // The port for the Quickstart Postman collection and cURL examples is 8002
 const port = dotenv.parsed.HTTP_PORT || 8002;
