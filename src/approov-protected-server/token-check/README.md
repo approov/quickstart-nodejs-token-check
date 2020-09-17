@@ -50,3 +50,5 @@ npm start
 ```
 
 Finally, you can test that the Approov integration example works as expected with this [Postman collection](/README.md#testing-with-postman) or with some cURL requests [examples](/README.md#testing-with-curl).
+
+[TOC](#toc---table-of-contents)
