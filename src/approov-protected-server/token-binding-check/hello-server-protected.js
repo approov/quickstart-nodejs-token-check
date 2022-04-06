@@ -23,6 +23,7 @@ const verifyApproovToken = function(req) {
 
   if (!appoovToken) {
     // You may want to add some logging here.
+    console.debug("Missing Approov token")
     return false
   }
 
@@ -31,6 +32,7 @@ const verifyApproovToken = function(req) {
 
     if (err) {
       // You may want to add some logging here.
+      console.debug("Approov token error: " + err)
       return false
     }
 
@@ -45,13 +47,10 @@ const verifyApproovToken = function(req) {
 
 const verifyApproovTokenBinding = function(req) {
 
-  // Note that the `pay` claim will, under normal circumstances, be present,
-  // but if the Approov failover system is enabled, then no claim will be
-  // present, and in this case you want to return true, otherwise you will not
-  // be able to benefit from the redundancy afforded by the failover system.
   if (!("pay" in req.approovTokenClaims)) {
     // You may want to add some logging here.
-    return true
+    console.debug("Approov token binding error: the `pay` claim missing in the payload")
+    return false
   }
 
   // The Approov token claims is added to the request object on a successful
@@ -64,6 +63,7 @@ const verifyApproovTokenBinding = function(req) {
 
   if (!token_binding_header) {
     // You may want to add some logging here.
+    console.debug("Approov token binding error: missing the token binding header in the request")
     return false
   }
 
@@ -75,6 +75,8 @@ const verifyApproovTokenBinding = function(req) {
 }
 
 const server = http.createServer((req, res) => {
+  console.debug("<--- / GET")
+
   res.setHeader('Content-Type', 'application/json');
 
   if (!verifyApproovToken(req)) {
@@ -84,6 +86,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (!verifyApproovTokenBinding(req)) {
+    console.debug("Approov token binding error: invalid token binding")
     res.statusCode = 401
     res.end(JSON.stringify({}))
     return

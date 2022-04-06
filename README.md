@@ -11,6 +11,7 @@ This repo implements the Approov server-side request verification code in NodeJS
 * [How it Works?](#how-it-works)
 * [Quickstarts](#approov-integration-quickstarts)
 * [Examples](#approov-integration-examples)
+* [Testing](#testing-the-approov-integration)
 * [Useful Links](#useful-links)
 
 
@@ -85,7 +86,22 @@ git diff --no-index src/approov-protected-server/token-check/hello-server-protec
 
 ## Approov Integration Examples
 
-The code examples for the Approov quickstarts are extracted from this simple [Approov integration examples](/src/approov-protected-server), that you can run from your computer to play around with the Approov integration and gain a better understanding of how simple and easy it is to integrate Approov in a NodeJS API server.
+The code examples for the Approov quickstarts are extracted from this simple Approov integration examples:
+
+* [Approov Token](/src/approov-protected-server/token-check) protected example server.
+* [Approov Token Binding](/src/approov-protected-server/token-binding-check) protected example server.
+
+You can run them from your computer to play around with the Approov integration and gain a better understanding of how simple and easy it is to integrate Approov in a NodeJS API server.
+
+[TOC](#toc---table-of-contents)
+
+
+## Testing the Approov Integration
+
+Each Quickstart has at their end a dedicated section for testing, that will walk you through the necessary steps to use the Approov CLI to generate valid and invalid tokens to test your Approov integration without the need to rely on the genuine mobile app(s) using your backend.
+
+* [Approov Token](/docs/APPROOV_TOKEN_QUICKSTART.md#test-your-approov-integration) test examples.
+* [Approov Token Binding](/docs/APPROOV_TOKEN_BINDING_QUICKSTART.md#test-your-approov-integration) test examples.
 
 ### Testing with Postman
 

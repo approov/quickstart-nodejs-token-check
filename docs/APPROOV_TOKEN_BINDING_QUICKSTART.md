@@ -48,7 +48,7 @@ Approov needs to know the domain name of the API for which it will issue tokens.
 
 Add it with:
 
-```text
+```bash
 approov api -add your.api.domain.com
 ```
 
@@ -62,7 +62,7 @@ Approov tokens are signed with a symmetric secret. To verify tokens, we need to 
 
 Retrieve the Approov secret with:
 
-```text
+```bash
 approov secret -get base64
 ```
 
@@ -72,7 +72,7 @@ approov secret -get base64
 
 Open the `.env` file and add the Approov secret to the var:
 
-```text
+```bash
 APPROOV_BASE64_SECRET=approov_base64_secret_here
 ```
 
@@ -114,13 +114,9 @@ const verifyApproovToken = function(req) {
 
 const verifyApproovTokenBinding = function(req) {
 
-  // Note that the `pay` claim will, under normal circumstances, be present,
-  // but if the Approov failover system is enabled, then no claim will be
-  // present, and in this case you want to return true, otherwise you will not
-  // be able to benefit from the redundancy afforded by the failover system.
   if (!("pay" in req.approovTokenClaims)) {
     // You may want to add some logging here.
-    return true
+    return false
   }
 
   // The Approov token claims is added to the request object on a successful
@@ -175,13 +171,13 @@ The following examples below use cURL, but you can also use the [Postman Collect
 
 Generate a valid token example from the Approov Cloud service:
 
-```
+```bash
 approov token -setDataHashInToken 'Bearer authorizationtoken' -genExample your.api.domain.com
 ```
 
 Then make the request with the generated token:
 
-```text
+```bash
 curl -i --request GET 'https://your.api.domain.com/v1/shapes' \
   --header 'Authorization: Bearer authorizationtoken' \
   --header 'Approov-Token: APPROOV_TOKEN_EXAMPLE_HERE'
@@ -203,7 +199,7 @@ HTTP/2 200
 
 Let's just remove the Authorization header from the request:
 
-```text
+```bash
 curl -i --request GET 'https://your.api.domain.com/v1/shapes' \
   --header 'Approov-Token: APPROOV_TOKEN_EXAMPLE_HERE'
 ```
@@ -222,7 +218,7 @@ HTTP/2 401
 
 Make the request with the same generated token, but with another random authorization token:
 
-```
+```bash
 curl -i --request GET 'https://your.api.domain.com/v1/shapes' \
   --header 'Authorization: Bearer anotherauthorizationtoken' \
   --header 'Approov-Token: APPROOV_TOKEN_EXAMPLE_HERE'

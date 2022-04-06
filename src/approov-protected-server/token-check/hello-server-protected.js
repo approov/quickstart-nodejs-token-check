@@ -23,6 +23,7 @@ const verifyApproovToken = function(req) {
 
   if (!appoovToken) {
     // You may want to add some logging here.
+    console.debug("Missing Approov token")
     return false
   }
 
@@ -31,6 +32,7 @@ const verifyApproovToken = function(req) {
 
     if (err) {
       // You may want to add some logging here.
+      console.debug("Approov token error: " + err)
       return false
     }
 
@@ -44,6 +46,9 @@ const verifyApproovToken = function(req) {
 }
 
 const server = http.createServer((req, res) => {
+
+  console.debug("<--- / GET")
+
   res.setHeader('Content-Type', 'application/json');
 
   if (!verifyApproovToken(req)) {

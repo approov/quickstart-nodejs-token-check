@@ -48,7 +48,7 @@ Approov needs to know the domain name of the API for which it will issue tokens.
 
 Add it with:
 
-```text
+```bash
 approov api -add your.api.domain.com
 ```
 
@@ -62,7 +62,7 @@ Approov tokens are signed with a symmetric secret. To verify tokens, we need to 
 
 Retrieve the Approov secret with:
 
-```text
+```bash
 approov secret -get base64
 ```
 
@@ -72,7 +72,7 @@ approov secret -get base64
 
 Open the `.env` file and add the Approov secret to the var:
 
-```text
+```bash
 APPROOV_BASE64_SECRET=approov_base64_secret_here
 ```
 
@@ -138,13 +138,13 @@ The following examples below use cURL, but you can also use the [Postman Collect
 
 Generate a valid token example from the Approov Cloud service:
 
-```text
+```bash
 approov token -genExample your.api.domain.com
 ```
 
 Then make the request with the generated token:
 
-```text
+```bash
 curl -i --request GET 'https://your.api.domain.com' \
   --header 'Approov-Token: APPROOV_TOKEN_EXAMPLE_HERE'
 ```
@@ -163,13 +163,13 @@ HTTP/2 200
 
 Generate an invalid token example from the Approov Cloud service:
 
-```text
+```bash
 approov token -type invalid -genExample your.api.domain.com
 ```
 
 Then make the request with the generated token:
 
-```text
+```bash
 curl -i --request GET 'https://your.api.domain.com' \
   --header 'Approov-Token: APPROOV_INVALID_TOKEN_EXAMPLE_HERE'
 ```

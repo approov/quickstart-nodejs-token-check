@@ -39,15 +39,36 @@ First, you need to set the dummy secret in the `src/approov-protected-server/tok
 
 Second, you need to install the dependencies. From the `src/approov-protected-server/token-check` folder execute:
 
-```text
+```bash
 npm install
 ```
 
 Now, you can run this example from the `src/approov-protected-server/token-check` folder with:
 
-```text
+```bash
 npm start
 ```
+
+Next, you can test that it works with:
+
+```bash
+curl -iX GET 'http://localhost:8002'
+```
+
+The response will be a `401` unauthorized request:
+
+```text
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+Date: Wed, 06 Apr 2022 12:01:58 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+Content-Length: 2
+
+{}
+```
+
+The reason you got a `401` is because the Approoov token isn't provided in the headers of the request.
 
 Finally, you can test that the Approov integration example works as expected with this [Postman collection](/README.md#testing-with-postman) or with some cURL requests [examples](/README.md#testing-with-curl).
 
