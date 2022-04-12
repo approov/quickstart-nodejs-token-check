@@ -3,7 +3,7 @@ version: "2.3"
 services:
 
   unprotected-server:
-    image: approov/nodejs-express:17.7.1
+    image: approov/nodejs:17.7.1
     build: ./
     networks:
       - default
@@ -14,7 +14,7 @@ services:
       - ./src/unprotected-server:/home/node/workspace
 
   approov-token-check:
-    image: approov/nodejs-express:17.7.1
+    image: approov/nodejs:17.7.1
     build: ./
     networks:
       - default
@@ -25,7 +25,7 @@ services:
       - ./src/approov-protected-server/token-check:/home/node/workspace
 
   approov-token-binding-check:
-    image: approov/nodejs-express:17.7.1
+    image: approov/nodejs:17.7.1
     build: ./
     networks:
       - default
