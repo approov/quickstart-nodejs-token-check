@@ -7,7 +7,27 @@ This repo implements the Approov server-side request verification code in NodeJS
 
 ## Approov Integration Quickstart
 
-First, get your Approov Secret with the [Appoov CLI](https://approov.io/docs/latest/approov-installation/index.html#initializing-the-approov-cli):
+The quickstart was tested with the following Operating Systems:
+
+* Ubuntu 20.04
+* MacOS Big Sur
+* Windows 10 WSL2 - Ubuntu 20.04
+
+First, setup the [Appoov CLI](https://approov.io/docs/latest/approov-installation/index.html#initializing-the-approov-cli).
+
+Now, register the API domain for which Approov will issues tokens:
+
+```bash
+approov api -add api.example.com
+```
+
+Next, enable your Approov `admin` role with:
+
+```bash
+eval `approov role admin`
+````
+
+Now, get your Approov Secret with the [Appoov CLI](https://approov.io/docs/latest/approov-installation/index.html#initializing-the-approov-cli):
 
 ```bash
 approov secret -get base64
