@@ -19,16 +19,16 @@ const approovSecret = Buffer.from(approovBase64Secret, 'base64')
 
 const verifyApproovToken = function(req) {
 
-  const appoovToken = req.headers['approov-token']
+  const approovToken = req.headers['approov-token']
 
-  if (!appoovToken) {
+  if (!approovToken) {
     // You may want to add some logging here.
     console.debug("Missing Approov token")
     return false
   }
 
   // decode token, verify secret and check exp
-  return jwt.verify(appoovToken, approovSecret, { algorithms: ['HS256'] }, function(err, decoded) {
+  return jwt.verify(approovToken, approovSecret, { algorithms: ['HS256'] }, function(err, decoded) {
 
     if (err) {
       // You may want to add some logging here.
