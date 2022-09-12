@@ -9,7 +9,7 @@ This quickstart is for developers familiar with NodeJS who are looking for a qui
 * [Requirements](#requirements)
 * [Approov Setup](#approov-setup)
 * [Approov Token Check](#approov-token-check)
-* [Try the Approov Integration Example](#try-the-approov-integration-example)
+* [Test the Approov Integration](#test-your-approov-integration)
 
 
 ## Why?
