@@ -7,12 +7,7 @@ This project provides a server-side example of Approov token verification for a 
  - `/token-binding` - requires a valid Approov token which is bound to a header value.
  - `/token-double-binding` - requires a valid Approov token which is bound to two header values.
 
-In this example, Approov protection is enforced by `approovTokenVerifier` (see [ApproovApplication.js](ApproovApplication.js#L199-L235)), which reads the `Approov-Token`, verifies its signature/exp, and validates token bindings before returning `401` on failure. Protected endpoints are the routes listed in `ROUTES` (see [ApproovApplication.js](ApproovApplication.js#L32-L88)), which are only accessible when this middleware passes.
-
-Implementation pointers (with line ranges):
-- Middleware/filter implementation: [ApproovApplication.js](ApproovApplication.js#L199-L235)
-- Protected route configuration: [ApproovApplication.js](ApproovApplication.js#L32-L88)
-- Token/binding validation logic (`verifyApproovToken`, `extractBindingValue`, `isBindingValid`): [ApproovApplication.js](ApproovApplication.js#L237-L303).
+In this example, Approov protection is enforced by [approovTokenVerifier](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L199-L235), which reads the `Approov-Token` header, and validates the token `signature` and `exp` claim in  [verifyApproovToken](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L237-L251). Protected endpoints are those with `requiresApproov: true` in [ROUTES](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L32-L88).
 
 ## Approov Token Verification Flow
 
