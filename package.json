@@ -1,0 +1,14 @@
+{
+  "name": "approov-node-token-check",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Approov token and token binding verification example using Node.js core HTTP.",
+  "main": "ApproovApplication.js",
+  "scripts": {
+    "start": "node ApproovApplication.js",
+    "test": "bash test.sh"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
