@@ -22,16 +22,23 @@ if (!hasText(APPROOV_SECRET_BASE64URL)) {
 
 const APPROOV_SECRET = base64UrlDecodeToBuffer(APPROOV_SECRET_BASE64URL.trim());
 
-const APPROOV_ACCOUNT_PUBLIC_KEY_BASE64 =
-  process.env.APPROOV_ACCOUNT_PUBLIC_KEY_BASE64 ||
-  process.env.APPROOV_ACCOUNT_PUBLIC_KEY;
+const APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL =
+  process.env.APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL ||
+  process.env.APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET;
+const APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64 =
+  process.env.APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64;
+const APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_RAW =
+  process.env.APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_RAW;
+const APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID =
+  process.env.APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID;
 
 const MESSAGE_SIGNING_TOLERANCE_SECONDS = parsePositiveInt(
   process.env.APPROOV_MESSAGE_SIGNING_TOLERANCE_SECONDS,
   60
 );
 
-const MESSAGE_SIGNING_ALGORITHM = 'ecdsa-p256-sha256';
+const INSTALL_MESSAGE_SIGNING_ALGORITHM = 'ecdsa-p256-sha256';
+const ACCOUNT_MESSAGE_SIGNING_ALGORITHM = 'hmac-sha256';
 
 const MESSAGE_SIGNING_REQUIRED_PARAMS = Object.freeze([
   'alg',
@@ -39,10 +46,13 @@ const MESSAGE_SIGNING_REQUIRED_PARAMS = Object.freeze([
   'expires',
 ]);
 
-const APPROOV_ACCOUNT_PUBLIC_KEY = loadPublicKey(
-  APPROOV_ACCOUNT_PUBLIC_KEY_BASE64,
-  'APPROOV_ACCOUNT_PUBLIC_KEY_BASE64'
+const VERBOSE_LOGGING = parseBoolean(process.env.APPROOV_VERBOSE_LOGGING, true);
+const HTTP_LOGGING_ENABLED = parseBoolean(
+  process.env.APPROOV_HTTP_LOGGING,
+  false
 );
+
+const APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET = loadAccountMessageSigningSecret();
 
 let approovEnabled = true;
 let tokenBindingEnabled = true;
@@ -145,6 +155,13 @@ const server = http.createServer((req, res) => {
     state: {},
   };
 
+  if (HTTP_LOGGING_ENABLED) {
+    enableHttpLogging(ctx);
+    readRequestBody(ctx).catch((error) => {
+      logVerbose(ctx, 'http', 'body', `Failed to read body: ${error.message}`);
+    });
+  }
+
   runMiddleware(ctx, MIDDLEWARE, route.handler).catch((error) => {
     console.error('Unhandled error:', error);
     if (!res.writableEnded) {
@@ -242,17 +259,21 @@ function tokenDoubleBindingHandler(ctx) {
 async function approovTokenVerifier(ctx, next) {
   const route = ctx.route;
   if (!route || !route.requiresApproov) {
+    logVerbose(ctx, 'approov', 'skip', 'Route does not require Approov.');
     await next();
     return;
   }
 
   if (!approovEnabled) {
+    logVerbose(ctx, 'approov', 'skip', 'Approov checks disabled.');
     await next();
     return;
   }
 
+  logVerbose(ctx, 'approov', 'start', 'Approov verification started.');
   const token = readApproovToken(ctx.headers);
   if (!hasText(token)) {
+    logVerbose(ctx, 'approov', 'fail', 'Missing Approov-Token header.');
     unauthorized(ctx.res, 'Missing Approov-Token header.');
     return;
   }
@@ -260,7 +281,14 @@ async function approovTokenVerifier(ctx, next) {
   let claims;
   try {
     claims = verifyApproovToken(token);
+    logVerbose(
+      ctx,
+      'approov',
+      'token',
+      `Token verified (exp=${claims.exp ?? 'n/a'}; ipk=${hasText(claims.ipk ? String(claims.ipk) : '')}; mskid=${claims.mskid ?? 'n/a'}).`
+    );
   } catch (error) {
+    logVerbose(ctx, 'approov', 'fail', `Token verification failed: ${error.message}`);
     unauthorized(ctx.res, error.message);
     return;
   }
@@ -268,21 +296,29 @@ async function approovTokenVerifier(ctx, next) {
   if (tokenBindingEnabled && needsBindingCheck(route.path)) {
     const bindingValue = extractBindingValue(route.path, ctx.headers);
     if (!hasText(bindingValue) || !isBindingValid(bindingValue, claims)) {
+      logVerbose(ctx, 'binding', 'fail', 'Token binding validation failed.');
       unauthorized(ctx.res, 'Invalid token binding.');
       return;
     }
+    logVerbose(ctx, 'binding', 'ok', 'Token binding validation passed.');
   }
 
   if (route.requiresMessageSignature) {
     try {
+      logVerbose(ctx, 'signature', 'start', 'Message signature verification started.');
       await verifyMessageSignatures(ctx, claims);
+      logVerbose(ctx, 'signature', 'ok', 'Message signature verification passed.');
     } catch (error) {
+      logVerbose(ctx, 'signature', 'fail', `Message signature verification failed: ${error.message}`);
       unauthorized(ctx.res, error.message);
       return;
     }
+  } else {
+    logVerbose(ctx, 'signature', 'skip', 'Route does not require message signing.');
   }
 
   ctx.state.approovClaims = claims;
+  logVerbose(ctx, 'approov', 'done', 'Approov verification completed.');
   await next();
 }
 
@@ -290,11 +326,13 @@ function verifyApproovToken(token) {
   const parsed = parseJwt(token);
 
   if (parsed.header.alg !== 'HS256') {
+    logVerbose(null, 'approov', 'token', `Rejected token alg=${parsed.header.alg || 'unknown'}.`);
     throw new Error(`Unsupported token alg: ${parsed.header.alg || 'unknown'}.`);
   }
 
   const expectedSignature = signHmac(parsed.signingInput, APPROOV_SECRET);
   if (!bufferEquals(expectedSignature, parsed.signature)) {
+    logVerbose(null, 'approov', 'token', 'Token signature mismatch.');
     throw new Error('Approov token signature verification failed.');
   }
 
@@ -347,6 +385,7 @@ function extractBindingValue(pathname, headers) {
 function isBindingValid(bindingValue, claims) {
   const expected = typeof claims.pay === 'string' ? claims.pay.trim() : '';
   if (!hasText(expected)) {
+    logVerbose(null, 'binding', 'token', 'Missing pay claim for token binding.');
     return false;
   }
 
@@ -356,43 +395,78 @@ function isBindingValid(bindingValue, claims) {
 
 async function verifyMessageSignatures(ctx, claims) {
   const installPublicKey = loadInstallPublicKey(claims);
-  const accountPublicKey = APPROOV_ACCOUNT_PUBLIC_KEY;
+  const accountKeyId = typeof claims.mskid === 'string' ? claims.mskid.trim() : '';
+  const shouldVerifyInstall = !!installPublicKey;
+  const shouldVerifyAccount = hasText(accountKeyId);
 
-  if (!installPublicKey && !accountPublicKey) {
+  if (!shouldVerifyInstall && !shouldVerifyAccount) {
+    logVerbose(ctx, 'signature', 'skip', 'No install ipk or account key id available.');
     return;
+  }
+
+  if (shouldVerifyAccount && !APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET) {
+    logVerbose(ctx, 'signature', 'fail', 'Account message signing secret not configured.');
+    throw new Error('Account message signing secret not configured.');
+  }
+
+  if (shouldVerifyAccount && hasText(APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID)) {
+    if (APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID !== accountKeyId) {
+      logVerbose(
+        ctx,
+        'signature',
+        'account',
+        `Account key id mismatch (expected=${APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID}, got=${accountKeyId}).`
+      );
+      throw new Error('Account message signing key id mismatch.');
+    }
   }
 
   const signatureHeader = headerValue(ctx.headers, HEADER_NAMES.SIGNATURE);
   const signatureInputHeader = headerValue(ctx.headers, HEADER_NAMES.SIGNATURE_INPUT);
   if (!hasText(signatureHeader) || !hasText(signatureInputHeader)) {
+    logVerbose(ctx, 'signature', 'fail', 'Missing Signature or Signature-Input header.');
     throw new Error('Missing Signature headers.');
   }
 
   const signatures = structuredHeaders.parseDictionary(signatureHeader);
   const signatureInputs = structuredHeaders.parseDictionary(signatureInputHeader);
+  logVerbose(
+    ctx,
+    'signature',
+    'headers',
+    `Signature keys=${Array.from(signatures.keys()).join(',') || 'none'}; Signature-Input keys=${Array.from(signatureInputs.keys()).join(',') || 'none'}.`
+  );
 
   if (hasText(headerValue(ctx.headers, HEADER_NAMES.CONTENT_DIGEST))) {
     await verifyContentDigest(ctx);
   }
 
-  if (installPublicKey) {
+  if (shouldVerifyInstall) {
+    logVerbose(ctx, 'signature', 'install', 'Verifying install signature entry.');
     await verifySignatureEntry(
       ctx,
       signatures,
       signatureInputs,
       'install',
-      installPublicKey
+      installPublicKey,
+      INSTALL_MESSAGE_SIGNING_ALGORITHM
     );
+  } else if (signatures.has('install')) {
+    logVerbose(ctx, 'signature', 'install', 'Install signature present but ipk claim missing.');
   }
 
-  if (accountPublicKey) {
+  if (shouldVerifyAccount) {
+    logVerbose(ctx, 'signature', 'account', 'Verifying account signature entry.');
     await verifySignatureEntry(
       ctx,
       signatures,
       signatureInputs,
       'account',
-      accountPublicKey
+      APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET,
+      ACCOUNT_MESSAGE_SIGNING_ALGORITHM
     );
+  } else if (signatures.has('account')) {
+    logVerbose(ctx, 'signature', 'account', 'Account signature present but mskid claim missing.');
   }
 }
 
@@ -410,14 +484,18 @@ async function verifySignatureEntry(
   signatures,
   signatureInputs,
   signatureName,
-  publicKey
+  verificationKey,
+  algorithm
 ) {
   const signatureEntry = signatures.get(signatureName);
   const signatureInputEntry = signatureInputs.get(signatureName);
 
   if (!signatureEntry || !signatureInputEntry) {
+    logVerbose(ctx, 'signature', signatureName, 'Signature entry missing.');
     throw new Error(`Missing ${signatureName} signature entry.`);
   }
+
+  logSignatureInputDetails(ctx, signatureName, signatureInputEntry);
 
   const signatureHeader = structuredHeaders.serializeDictionary(
     new Map([[signatureName, signatureEntry]])
@@ -426,20 +504,29 @@ async function verifySignatureEntry(
     new Map([[signatureName, signatureInputEntry]])
   );
 
+  const signatureRequest = buildSignatureRequest(
+    ctx,
+    signatureHeader,
+    signatureInputHeader
+  );
+  logVerbose(ctx, 'signature', signatureName, `Request URL used: ${signatureRequest.url}`);
+  logSignatureBaseHash(ctx, signatureName, signatureRequest, signatureInputEntry);
+
   const verified = await httpbis.verifyMessage(
     {
       keyLookup: async () => ({
         id: signatureName,
-        algs: [MESSAGE_SIGNING_ALGORITHM],
-        verify: createVerifier(publicKey, MESSAGE_SIGNING_ALGORITHM),
+        algs: [algorithm],
+        verify: createVerifier(verificationKey, algorithm),
       }),
       requiredParams: MESSAGE_SIGNING_REQUIRED_PARAMS,
       tolerance: MESSAGE_SIGNING_TOLERANCE_SECONDS,
     },
-    buildSignatureRequest(ctx, signatureHeader, signatureInputHeader)
+    signatureRequest
   );
 
   if (verified !== true) {
+    logVerbose(ctx, 'signature', signatureName, 'Signature verification returned false.');
     throw new Error(`Invalid ${signatureName} message signature.`);
   }
 }
@@ -457,8 +544,22 @@ function buildSignatureRequest(ctx, signatureHeader, signatureInputHeader) {
 }
 
 function buildRequestUrl(req) {
-  const host = req.headers.host || `${SERVER_HOSTNAME}:${HTTP_PORT}`;
-  const scheme = req.socket && req.socket.encrypted ? 'https' : 'http';
+  const forwardedProto = firstHeaderValue(req.headers['x-forwarded-proto']);
+  const forwardedHost = firstHeaderValue(req.headers['x-forwarded-host']);
+  const forwarded = firstHeaderValue(req.headers['forwarded']);
+
+  let scheme = forwardedProto;
+  if (!scheme && forwarded) {
+    const match = forwarded.match(/proto=([^;]+)/i);
+    if (match) {
+      scheme = match[1];
+    }
+  }
+  if (!scheme) {
+    scheme = req.socket && req.socket.encrypted ? 'https' : 'http';
+  }
+
+  const host = forwardedHost || req.headers.host || `${SERVER_HOSTNAME}:${HTTP_PORT}`;
   return `${scheme}://${host}${req.url || '/'}`;
 }
 
@@ -470,6 +571,7 @@ async function verifyContentDigest(ctx) {
 
   const digestEntries = structuredHeaders.parseDictionary(header);
   if (!digestEntries || digestEntries.size === 0) {
+    logVerbose(ctx, 'digest', 'fail', 'Content-Digest header empty.');
     throw new Error('Content-Digest header is empty.');
   }
 
@@ -485,6 +587,7 @@ async function verifyContentDigest(ctx) {
           : null;
 
     if (!hashAlgo) {
+      logVerbose(ctx, 'digest', 'fail', `Unsupported algorithm: ${algo}.`);
       throw new Error(`Unsupported content digest algorithm: ${algo}.`);
     }
 
@@ -494,6 +597,7 @@ async function verifyContentDigest(ctx) {
     } else if (typeof item === 'string') {
       expectedDigest = item;
     } else {
+      logVerbose(ctx, 'digest', 'fail', `Unsupported Content-Digest value for ${algo}.`);
       throw new Error(`Unsupported Content-Digest value for ${algo}.`);
     }
 
@@ -503,8 +607,15 @@ async function verifyContentDigest(ctx) {
       .digest('base64');
 
     if (!safeStringEqual(expectedDigest, computedDigest)) {
+      logVerbose(
+        ctx,
+        'digest',
+        'fail',
+        `Digest mismatch for ${algo} (expected=${expectedDigest}, computed=${computedDigest}).`
+      );
       throw new Error(`Content digest verification failed for ${algo}.`);
     }
+    logVerbose(ctx, 'digest', 'ok', `Digest matched for ${algo}.`);
   }
 }
 
@@ -512,8 +623,11 @@ async function readRequestBody(ctx) {
   if (ctx.state.bodyBuffer) {
     return ctx.state.bodyBuffer;
   }
+  if (ctx.state.bodyPromise) {
+    return ctx.state.bodyPromise;
+  }
 
-  const bodyBuffer = await new Promise((resolve, reject) => {
+  ctx.state.bodyPromise = new Promise((resolve, reject) => {
     const chunks = [];
     ctx.req.on('data', (chunk) => {
       chunks.push(chunk);
@@ -522,7 +636,9 @@ async function readRequestBody(ctx) {
     ctx.req.on('error', reject);
   });
 
+  const bodyBuffer = await ctx.state.bodyPromise;
   ctx.state.bodyBuffer = bodyBuffer;
+  ctx.state.bodyPromise = null;
   return bodyBuffer;
 }
 
@@ -648,6 +764,157 @@ function base64UrlDecodeToBuffer(value) {
   return Buffer.from(padded, 'base64');
 }
 
+function logVerbose(ctx, area, step, message) {
+  if (!VERBOSE_LOGGING) {
+    return;
+  }
+  const prefix = ctx ? `[${ctx.method} ${ctx.path}]` : '[Approov]';
+  console.log(`${prefix} ${area}:${step} ${message}`);
+}
+
+function logSignatureInputDetails(ctx, signatureName, signatureInputEntry) {
+  if (!VERBOSE_LOGGING) {
+    return;
+  }
+  if (!Array.isArray(signatureInputEntry) || signatureInputEntry.length < 2) {
+    logVerbose(ctx, 'signature', signatureName, 'Signature input entry malformed.');
+    return;
+  }
+  const components = signatureInputEntry[0] || [];
+  const params = signatureInputEntry[1] || new Map();
+  const componentNames = components.map(([name]) => name).join(',') || 'none';
+  const paramPairs = Array.from(params.entries())
+    .map(([key, value]) => `${key}=${value}`)
+    .join(',') || 'none';
+  logVerbose(
+    ctx,
+    'signature',
+    signatureName,
+    `Signature-Input components=[${componentNames}], params=[${paramPairs}].`
+  );
+}
+
+function logSignatureBaseHash(ctx, signatureName, signatureRequest, signatureInputEntry) {
+  if (!VERBOSE_LOGGING) {
+    return;
+  }
+  try {
+    if (!Array.isArray(signatureInputEntry) || signatureInputEntry.length < 2) {
+      return;
+    }
+    const components = signatureInputEntry[0] || [];
+    const fields = components.map((item) => structuredHeaders.serializeItem(item));
+    const signatureBase = httpbis.createSignatureBase(
+      { fields },
+      signatureRequest
+    );
+    signatureBase.push([
+      '"@signature-params"',
+      [structuredHeaders.serializeList([signatureInputEntry])],
+    ]);
+    const base = httpbis.formatSignatureBase(signatureBase);
+    const baseHash = crypto
+      .createHash('sha256')
+      .update(base)
+      .digest('base64');
+    logVerbose(
+      ctx,
+      'signature',
+      signatureName,
+      `Signature base sha256 (base64)=${baseHash}`
+    );
+  } catch (error) {
+    logVerbose(
+      ctx,
+      'signature',
+      signatureName,
+      `Failed to compute signature base hash: ${error.message}`
+    );
+  }
+}
+
+function enableHttpLogging(ctx) {
+  if (!HTTP_LOGGING_ENABLED) {
+    return;
+  }
+
+  const startTime = Date.now();
+  const responseChunks = [];
+  const originalWrite = ctx.res.write.bind(ctx.res);
+  const originalEnd = ctx.res.end.bind(ctx.res);
+
+  ctx.res.write = (chunk, encoding, callback) => {
+    if (chunk) {
+      responseChunks.push(toBuffer(chunk, encoding));
+    }
+    return originalWrite(chunk, encoding, callback);
+  };
+
+  ctx.res.end = (chunk, encoding, callback) => {
+    if (chunk) {
+      responseChunks.push(toBuffer(chunk, encoding));
+    }
+    const responseBody = Buffer.concat(responseChunks);
+    logHttpExchange(ctx, responseBody, startTime);
+    return originalEnd(chunk, encoding, callback);
+  };
+}
+
+function logHttpExchange(ctx, responseBody, startTime) {
+  if (!HTTP_LOGGING_ENABLED) {
+    return;
+  }
+  const durationMs = Date.now() - startTime;
+  const requestBodyPromise =
+    ctx.state.bodyPromise || Promise.resolve(ctx.state.bodyBuffer || Buffer.alloc(0));
+  requestBodyPromise
+    .then((requestBody) => {
+      const requestUrl = buildRequestUrl(ctx.req);
+      const responseHeaders = ctx.res.getHeaders();
+      console.log('--- HTTP EXCHANGE START ---');
+      console.log(`Request: ${ctx.method} ${requestUrl}`);
+      console.log('Request Headers:', JSON.stringify(ctx.headers, null, 2));
+      console.log('Request Body:', requestBody.toString('utf8'));
+      console.log(`Response Status: ${ctx.res.statusCode}`);
+      console.log('Response Headers:', JSON.stringify(responseHeaders, null, 2));
+      console.log('Response Body:', responseBody.toString('utf8'));
+      console.log(`Duration: ${durationMs}ms`);
+      console.log('--- HTTP EXCHANGE END ---');
+    })
+    .catch((error) => {
+      console.log('--- HTTP EXCHANGE START ---');
+      console.log(`Request: ${ctx.method} ${ctx.path}`);
+      console.log('Request Headers:', JSON.stringify(ctx.headers, null, 2));
+      console.log(`Failed to read request body: ${error.message}`);
+      console.log(`Response Status: ${ctx.res.statusCode}`);
+      console.log('Response Headers:', JSON.stringify(ctx.res.getHeaders(), null, 2));
+      console.log('Response Body:', responseBody.toString('utf8'));
+      console.log(`Duration: ${durationMs}ms`);
+      console.log('--- HTTP EXCHANGE END ---');
+    });
+}
+
+function toBuffer(chunk, encoding) {
+  if (Buffer.isBuffer(chunk)) {
+    return chunk;
+  }
+  if (typeof chunk === 'string') {
+    return Buffer.from(chunk, encoding);
+  }
+  return Buffer.from(String(chunk));
+}
+
+function firstHeaderValue(value) {
+  if (!value) {
+    return null;
+  }
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!hasText(raw)) {
+    return null;
+  }
+  return raw.split(',')[0].trim();
+}
+
 function createPublicKeyFromValue(value, label) {
   const trimmed = value.trim();
   try {
@@ -661,14 +928,26 @@ function createPublicKeyFromValue(value, label) {
   }
 }
 
-function loadPublicKey(value, label) {
-  if (!hasText(value)) {
+function loadAccountMessageSigningSecret() {
+  const secretValue =
+    APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL ||
+    APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64 ||
+    APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_RAW;
+
+  if (!hasText(secretValue)) {
     return null;
   }
+
   try {
-    return createPublicKeyFromValue(value, label);
+    if (APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_RAW) {
+      return Buffer.from(APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_RAW, 'utf8');
+    }
+    if (APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL) {
+      return base64UrlDecodeToBuffer(APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL);
+    }
+    return Buffer.from(APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64, 'base64');
   } catch (error) {
-    console.error(error.message);
+    console.error(`Account message signing secret is invalid: ${error.message}`);
     process.exit(1);
   }
 }
@@ -687,6 +966,20 @@ function parsePositiveInt(value, fallback) {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseBoolean(value, fallback) {
+  if (value == null) {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 function hasText(value) {

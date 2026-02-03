@@ -221,8 +221,8 @@ main() {
     exit 1
   fi
 
-  if [[ -n "${APPROOV_ACCOUNT_PUBLIC_KEY_BASE64:-}" || -n "${APPROOV_ACCOUNT_PUBLIC_KEY:-}" ]]; then
-    err "Account public key env is set; this script only signs the install key."
+  if [[ -n "${APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL:-}" || -n "${APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64:-}" || -n "${APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_RAW:-}" || -n "${APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID:-}" ]]; then
+    err "Account message signing env is set; this script only signs the install key."
     err "Unset it or extend the script to sign account signatures as well."
     exit 1
   fi

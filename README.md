@@ -215,8 +215,13 @@ data for both **install** and **account** signing modes.
 - **Install message signing** uses the `ipk` claim inside the Approov token. When the claim is
   present, requests must include a `Signature` and `Signature-Input` header with an `install`
   signature entry, signed with the install key.
-- **Account message signing** is enabled by setting `APPROOV_ACCOUNT_PUBLIC_KEY_BASE64` (base64 DER
-  or PEM). When set, requests must include an `account` signature entry in the same headers.
+- **Account message signing** is enabled by setting one of:
+  - `APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL`
+  - `APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64`
+  - `APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_RAW`
+  When enabled, requests must include an `account` signature entry in the same headers. If the
+  Approov token includes an `mskid` claim, the backend requires the account signature. You can
+  optionally enforce an expected key id via `APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID`.
 
 Both signatures must use `ecdsa-p256-sha256` and include `created` and `expires` parameters. You can
 adjust the allowed clock skew with `APPROOV_MESSAGE_SIGNING_TOLERANCE_SECONDS` (default `60`).
