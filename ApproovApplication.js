@@ -397,7 +397,7 @@ async function verifyMessageSignatures(ctx, claims) {
   const installPublicKey = loadInstallPublicKey(claims);
   const accountKeyId = typeof claims.mskid === 'string' ? claims.mskid.trim() : '';
   const shouldVerifyInstall = !!installPublicKey;
-  const shouldVerifyAccount = hasText(accountKeyId);
+  const shouldVerifyAccount = !shouldVerifyInstall && hasText(accountKeyId);
 
   if (!shouldVerifyInstall && !shouldVerifyAccount) {
     logVerbose(ctx, 'signature', 'skip', 'No install ipk or account key id available.');
@@ -451,6 +451,14 @@ async function verifyMessageSignatures(ctx, claims) {
       installPublicKey,
       INSTALL_MESSAGE_SIGNING_ALGORITHM
     );
+    if (hasText(accountKeyId)) {
+      logVerbose(
+        ctx,
+        'signature',
+        'account',
+        'Skipping account signature because install ipk claim is present.'
+      );
+    }
   } else if (signatures.has('install')) {
     logVerbose(ctx, 'signature', 'install', 'Install signature present but ipk claim missing.');
   }
