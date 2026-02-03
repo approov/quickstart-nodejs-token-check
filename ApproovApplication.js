@@ -4,6 +4,8 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { httpbis, createVerifier } = require('./vendor/http-message-signatures/lib');
+const structuredHeaders = require('./vendor/http-message-signatures/node_modules/structured-headers');
 
 loadEnvFile(path.join(__dirname, '.env'));
 
@@ -20,6 +22,28 @@ if (!hasText(APPROOV_SECRET_BASE64URL)) {
 
 const APPROOV_SECRET = base64UrlDecodeToBuffer(APPROOV_SECRET_BASE64URL.trim());
 
+const APPROOV_ACCOUNT_PUBLIC_KEY_BASE64 =
+  process.env.APPROOV_ACCOUNT_PUBLIC_KEY_BASE64 ||
+  process.env.APPROOV_ACCOUNT_PUBLIC_KEY;
+
+const MESSAGE_SIGNING_TOLERANCE_SECONDS = parsePositiveInt(
+  process.env.APPROOV_MESSAGE_SIGNING_TOLERANCE_SECONDS,
+  60
+);
+
+const MESSAGE_SIGNING_ALGORITHM = 'ecdsa-p256-sha256';
+
+const MESSAGE_SIGNING_REQUIRED_PARAMS = Object.freeze([
+  'alg',
+  'created',
+  'expires',
+]);
+
+const APPROOV_ACCOUNT_PUBLIC_KEY = loadPublicKey(
+  APPROOV_ACCOUNT_PUBLIC_KEY_BASE64,
+  'APPROOV_ACCOUNT_PUBLIC_KEY_BASE64'
+);
+
 let approovEnabled = true;
 let tokenBindingEnabled = true;
 
@@ -27,6 +51,8 @@ const HEADER_NAMES = Object.freeze({
   APPROOV_TOKEN: 'approov-token',
   AUTHORIZATION: 'authorization',
   CONTENT_DIGEST: 'content-digest',
+  SIGNATURE: 'signature',
+  SIGNATURE_INPUT: 'signature-input',
 });
 
 const ROUTES = Object.freeze([
@@ -75,6 +101,13 @@ const ROUTES = Object.freeze([
   },
   {
     method: 'GET',
+    path: '/token-check-signature',
+    handler: tokenCheckSignatureHandler,
+    requiresApproov: true,
+    requiresMessageSignature: true,
+  },
+  {
+    method: 'GET',
     path: '/token-binding',
     handler: tokenBindingHandler,
     requiresApproov: true,
@@ -112,12 +145,12 @@ const server = http.createServer((req, res) => {
     state: {},
   };
 
-  try {
-    runMiddleware(ctx, MIDDLEWARE, route.handler);
-  } catch (error) {
+  runMiddleware(ctx, MIDDLEWARE, route.handler).catch((error) => {
     console.error('Unhandled error:', error);
-    writeJson(res, 500, { error: 'server_error' });
-  }
+    if (!res.writableEnded) {
+      writeJson(res, 500, { error: 'server_error' });
+    }
+  });
 });
 
 server.listen(HTTP_PORT, SERVER_HOSTNAME, () => {
@@ -176,6 +209,16 @@ function tokenCheckHandler(ctx) {
   );
 }
 
+function tokenCheckSignatureHandler(ctx) {
+  writeJson(
+    ctx.res,
+    200,
+    infoPayload(
+      "Protected endpoint '/token-check-signature'; Approov token and message signature verified."
+    )
+  );
+}
+
 function tokenBindingHandler(ctx) {
   const authorization = headerValue(ctx.headers, HEADER_NAMES.AUTHORIZATION);
   const response = infoPayload(
@@ -196,15 +239,15 @@ function tokenDoubleBindingHandler(ctx) {
   writeJson(ctx.res, 200, response);
 }
 
-function approovTokenVerifier(ctx, next) {
+async function approovTokenVerifier(ctx, next) {
   const route = ctx.route;
   if (!route || !route.requiresApproov) {
-    next();
+    await next();
     return;
   }
 
   if (!approovEnabled) {
-    next();
+    await next();
     return;
   }
 
@@ -230,8 +273,17 @@ function approovTokenVerifier(ctx, next) {
     }
   }
 
+  if (route.requiresMessageSignature) {
+    try {
+      await verifyMessageSignatures(ctx, claims);
+    } catch (error) {
+      unauthorized(ctx.res, error.message);
+      return;
+    }
+  }
+
   ctx.state.approovClaims = claims;
-  next();
+  await next();
 }
 
 function verifyApproovToken(token) {
@@ -302,6 +354,178 @@ function isBindingValid(bindingValue, claims) {
   return safeStringEqual(expected, computed);
 }
 
+async function verifyMessageSignatures(ctx, claims) {
+  const installPublicKey = loadInstallPublicKey(claims);
+  const accountPublicKey = APPROOV_ACCOUNT_PUBLIC_KEY;
+
+  if (!installPublicKey && !accountPublicKey) {
+    return;
+  }
+
+  const signatureHeader = headerValue(ctx.headers, HEADER_NAMES.SIGNATURE);
+  const signatureInputHeader = headerValue(ctx.headers, HEADER_NAMES.SIGNATURE_INPUT);
+  if (!hasText(signatureHeader) || !hasText(signatureInputHeader)) {
+    throw new Error('Missing Signature headers.');
+  }
+
+  const signatures = structuredHeaders.parseDictionary(signatureHeader);
+  const signatureInputs = structuredHeaders.parseDictionary(signatureInputHeader);
+
+  if (hasText(headerValue(ctx.headers, HEADER_NAMES.CONTENT_DIGEST))) {
+    await verifyContentDigest(ctx);
+  }
+
+  if (installPublicKey) {
+    await verifySignatureEntry(
+      ctx,
+      signatures,
+      signatureInputs,
+      'install',
+      installPublicKey
+    );
+  }
+
+  if (accountPublicKey) {
+    await verifySignatureEntry(
+      ctx,
+      signatures,
+      signatureInputs,
+      'account',
+      accountPublicKey
+    );
+  }
+}
+
+function loadInstallPublicKey(claims) {
+  const publicKeyB64 =
+    typeof claims.ipk === 'string' ? claims.ipk.trim() : '';
+  if (!hasText(publicKeyB64)) {
+    return null;
+  }
+  return createPublicKeyFromValue(publicKeyB64, 'Approov install public key');
+}
+
+async function verifySignatureEntry(
+  ctx,
+  signatures,
+  signatureInputs,
+  signatureName,
+  publicKey
+) {
+  const signatureEntry = signatures.get(signatureName);
+  const signatureInputEntry = signatureInputs.get(signatureName);
+
+  if (!signatureEntry || !signatureInputEntry) {
+    throw new Error(`Missing ${signatureName} signature entry.`);
+  }
+
+  const signatureHeader = structuredHeaders.serializeDictionary(
+    new Map([[signatureName, signatureEntry]])
+  );
+  const signatureInputHeader = structuredHeaders.serializeDictionary(
+    new Map([[signatureName, signatureInputEntry]])
+  );
+
+  const verified = await httpbis.verifyMessage(
+    {
+      keyLookup: async () => ({
+        id: signatureName,
+        algs: [MESSAGE_SIGNING_ALGORITHM],
+        verify: createVerifier(publicKey, MESSAGE_SIGNING_ALGORITHM),
+      }),
+      requiredParams: MESSAGE_SIGNING_REQUIRED_PARAMS,
+      tolerance: MESSAGE_SIGNING_TOLERANCE_SECONDS,
+    },
+    buildSignatureRequest(ctx, signatureHeader, signatureInputHeader)
+  );
+
+  if (verified !== true) {
+    throw new Error(`Invalid ${signatureName} message signature.`);
+  }
+}
+
+function buildSignatureRequest(ctx, signatureHeader, signatureInputHeader) {
+  return {
+    method: ctx.method,
+    url: buildRequestUrl(ctx.req),
+    headers: {
+      ...ctx.headers,
+      [HEADER_NAMES.SIGNATURE]: signatureHeader,
+      [HEADER_NAMES.SIGNATURE_INPUT]: signatureInputHeader,
+    },
+  };
+}
+
+function buildRequestUrl(req) {
+  const host = req.headers.host || `${SERVER_HOSTNAME}:${HTTP_PORT}`;
+  const scheme = req.socket && req.socket.encrypted ? 'https' : 'http';
+  return `${scheme}://${host}${req.url || '/'}`;
+}
+
+async function verifyContentDigest(ctx) {
+  const header = headerValue(ctx.headers, HEADER_NAMES.CONTENT_DIGEST);
+  if (!hasText(header)) {
+    return;
+  }
+
+  const digestEntries = structuredHeaders.parseDictionary(header);
+  if (!digestEntries || digestEntries.size === 0) {
+    throw new Error('Content-Digest header is empty.');
+  }
+
+  const body = await readRequestBody(ctx);
+
+  for (const [algo, [item]] of digestEntries.entries()) {
+    const normalizedAlgo = algo.toLowerCase();
+    const hashAlgo =
+      normalizedAlgo === 'sha-256'
+        ? 'sha256'
+        : normalizedAlgo === 'sha-512'
+          ? 'sha512'
+          : null;
+
+    if (!hashAlgo) {
+      throw new Error(`Unsupported content digest algorithm: ${algo}.`);
+    }
+
+    let expectedDigest;
+    if (item instanceof structuredHeaders.ByteSequence) {
+      expectedDigest = item.toBase64();
+    } else if (typeof item === 'string') {
+      expectedDigest = item;
+    } else {
+      throw new Error(`Unsupported Content-Digest value for ${algo}.`);
+    }
+
+    const computedDigest = crypto
+      .createHash(hashAlgo)
+      .update(body)
+      .digest('base64');
+
+    if (!safeStringEqual(expectedDigest, computedDigest)) {
+      throw new Error(`Content digest verification failed for ${algo}.`);
+    }
+  }
+}
+
+async function readRequestBody(ctx) {
+  if (ctx.state.bodyBuffer) {
+    return ctx.state.bodyBuffer;
+  }
+
+  const bodyBuffer = await new Promise((resolve, reject) => {
+    const chunks = [];
+    ctx.req.on('data', (chunk) => {
+      chunks.push(chunk);
+    });
+    ctx.req.on('end', () => resolve(Buffer.concat(chunks)));
+    ctx.req.on('error', reject);
+  });
+
+  ctx.state.bodyBuffer = bodyBuffer;
+  return bodyBuffer;
+}
+
 function validateExpiration(claims) {
   const exp = Number(claims.exp);
   if (!Number.isFinite(exp)) {
@@ -337,19 +561,19 @@ function headerValue(headers, name) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function runMiddleware(ctx, middlewares, handler) {
+async function runMiddleware(ctx, middlewares, handler) {
   let index = -1;
 
-  const dispatch = () => {
+  const dispatch = async () => {
     index += 1;
-    if (index < middlewares.length) {
-      middlewares[index](ctx, dispatch);
+    const fn = index < middlewares.length ? middlewares[index] : handler;
+    if (!fn) {
       return;
     }
-    handler(ctx);
+    await fn(ctx, dispatch);
   };
 
-  dispatch();
+  await dispatch();
 }
 
 function parseRequest(req) {
@@ -424,12 +648,45 @@ function base64UrlDecodeToBuffer(value) {
   return Buffer.from(padded, 'base64');
 }
 
+function createPublicKeyFromValue(value, label) {
+  const trimmed = value.trim();
+  try {
+    if (trimmed.includes('-----BEGIN')) {
+      return crypto.createPublicKey(trimmed);
+    }
+    const der = base64UrlDecodeToBuffer(trimmed);
+    return crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+  } catch (error) {
+    throw new Error(`${label} is invalid: ${error.message}`);
+  }
+}
+
+function loadPublicKey(value, label) {
+  if (!hasText(value)) {
+    return null;
+  }
+  try {
+    return createPublicKeyFromValue(value, label);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+}
+
 function parsePort(value, fallback) {
   if (!hasText(value)) {
     return fallback;
   }
   const port = Number.parseInt(value, 10);
   return Number.isFinite(port) ? port : fallback;
+}
+
+function parsePositiveInt(value, fallback) {
+  if (!hasText(value)) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function hasText(value) {

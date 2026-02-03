@@ -1,0 +1,310 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.deriveComponent = deriveComponent;
+exports.extractHeader = extractHeader;
+exports.formatSignatureBase = formatSignatureBase;
+exports.createSigningParameters = createSigningParameters;
+exports.createSignatureBase = createSignatureBase;
+exports.signMessage = signMessage;
+exports.verifyMessage = verifyMessage;
+const structured_headers_1 = require("structured-headers");
+const types_1 = require("../types");
+const structured_header_1 = require("../structured-header");
+function mapCavageAlgorithm(alg) {
+    switch (alg.toLowerCase()) {
+        case 'hs2019':
+            return 'rsa-pss-sha512';
+        case 'rsa-sha1':
+            return 'rsa-v1_5-sha1';
+        case 'rsa-sha256':
+            return 'rsa-v1_5-sha256';
+        case 'ecdsa-sha256':
+            return 'ecdsa-p256-sha256';
+        default:
+            return alg;
+    }
+}
+function mapHttpbisAlgorithm(alg) {
+    switch (alg.toLowerCase()) {
+        case 'rsa-pss-sha512':
+            return 'hs2019';
+        case 'rsa-v1_5-sha1':
+            return 'rsa-sha1';
+        case 'rsa-v1_5-sha256':
+            return 'rsa-sha256';
+        case 'ecdsa-p256-sha256':
+            return 'ecdsa-sha256';
+        default:
+            return alg;
+    }
+}
+/**
+ * Components can be derived from requests or responses (which can also be bound to their request).
+ * The signature is essentially (component, signingSubject, supplementaryData)
+ *
+ * @todo - Allow consumers to register their own component parser somehow
+ */
+function deriveComponent(component, message) {
+    const [componentName, params] = (0, structured_headers_1.parseItem)((0, structured_header_1.quoteString)(component));
+    if (params.size) {
+        throw new Error('Component parameters are not supported in cavage');
+    }
+    switch (componentName.toString().toLowerCase()) {
+        case '@request-target': {
+            if (!(0, types_1.isRequest)(message)) {
+                throw new Error('Cannot derive @request-target on response');
+            }
+            const { pathname, search } = typeof message.url === 'string' ? new URL(message.url) : message.url;
+            // this is really sketchy because the request-target is actually what is in the raw HTTP header
+            // so one should avoid signing this value as the application layer just can't know how this
+            // is formatted
+            return [`${message.method.toLowerCase()} ${pathname}${search}`];
+        }
+        default:
+            throw new Error(`Unsupported component "${component}"`);
+    }
+}
+function extractHeader(header, { headers }) {
+    const [headerName, params] = (0, structured_headers_1.parseItem)((0, structured_header_1.quoteString)(header));
+    if (params.size) {
+        throw new Error('Field parameters are not supported in cavage');
+    }
+    const lcHeaderName = headerName.toString().toLowerCase();
+    const headerTuple = Object.entries(headers).find(([name]) => name.toLowerCase() === lcHeaderName);
+    if (!headerTuple) {
+        throw new Error(`No header ${headerName} found in headers`);
+    }
+    return [(Array.isArray(headerTuple[1]) ? headerTuple[1] : [headerTuple[1]]).map((val) => val.trim().replace(/\n\s*/gm, ' ')).join(', ')];
+}
+function formatSignatureBase(base) {
+    return base.reduce((accum, [key, value]) => {
+        const [keyName] = (0, structured_headers_1.parseItem)((0, structured_header_1.quoteString)(key));
+        const lcKey = keyName.toLowerCase();
+        if (lcKey.startsWith('@')) {
+            accum.push(`(${lcKey.slice(1)}): ${value.join(', ')}`);
+        }
+        else {
+            accum.push(`${key.toLowerCase()}: ${value.join(', ')}`);
+        }
+        return accum;
+    }, []).join('\n');
+}
+function createSigningParameters(config) {
+    const now = new Date();
+    return (config.params ?? types_1.defaultParams).reduce((params, paramName) => {
+        let value = '';
+        switch (paramName.toLowerCase()) {
+            case 'created':
+                // created is optional but recommended. If created is supplied but is null, that's an explicit
+                // instruction to *not* include the created parameter
+                if (config.paramValues?.created !== null) {
+                    const created = config.paramValues?.created ?? now;
+                    value = Math.floor(created.getTime() / 1000);
+                }
+                break;
+            case 'expires':
+                // attempt to obtain an explicit expires time, otherwise create one that is 300 seconds after
+                // creation. Don't add an expires time if there is no created time
+                if (config.paramValues?.expires || config.paramValues?.created !== null) {
+                    const expires = config.paramValues?.expires ?? new Date((config.paramValues?.created ?? now).getTime() + 300000);
+                    value = Math.floor(expires.getTime() / 1000);
+                }
+                break;
+            case 'keyid': {
+                // attempt to obtain the keyid omit if missing
+                const kid = config.paramValues?.keyid ?? config.key.id ?? null;
+                if (kid) {
+                    value = kid.toString();
+                }
+                break;
+            }
+            case 'alg': {
+                const alg = config.paramValues?.alg ?? config.key.alg ?? null;
+                if (alg) {
+                    value = alg.toString();
+                }
+                break;
+            }
+            default:
+                if (config.paramValues?.[paramName] instanceof Date) {
+                    value = Math.floor(config.paramValues[paramName].getTime() / 1000).toString();
+                }
+                else if (config.paramValues?.[paramName]) {
+                    value = config.paramValues[paramName];
+                }
+        }
+        if (value) {
+            params.set(paramName, value);
+        }
+        return params;
+    }, new Map());
+}
+function createSignatureBase(fields, message, signingParameters) {
+    return fields.reduce((base, fieldName) => {
+        const [field, params] = (0, structured_headers_1.parseItem)((0, structured_header_1.quoteString)(fieldName));
+        if (params.size) {
+            throw new Error('Field parameters are not supported');
+        }
+        const lcFieldName = field.toString().toLowerCase();
+        switch (lcFieldName) {
+            case '@created':
+                if (signingParameters.has('created')) {
+                    base.push(['(created)', [signingParameters.get('created')]]);
+                }
+                break;
+            case '@expires':
+                if (signingParameters.has('expires')) {
+                    base.push(['(expires)', [signingParameters.get('expires')]]);
+                }
+                break;
+            case '@request-target': {
+                if (!(0, types_1.isRequest)(message)) {
+                    throw new Error('Cannot read target of response');
+                }
+                const { pathname, search } = typeof message.url === 'string' ? new URL(message.url) : message.url;
+                base.push(['(request-target)', [`${message.method.toLowerCase()} ${pathname}${search}`]]);
+                break;
+            }
+            default:
+                base.push([lcFieldName, extractHeader(lcFieldName, message)]);
+        }
+        return base;
+    }, []);
+}
+async function signMessage(config, message) {
+    const signingParameters = createSigningParameters(config);
+    // NB: In spec versions 11 & 12 (the last 2), if no set of fields to sign has been provided, the default should be (created)
+    // other versions relied on the Date header - perhaps this should be configurable
+    const signatureBase = createSignatureBase(config.fields ?? ['@created'], message, signingParameters);
+    const base = formatSignatureBase(signatureBase);
+    // call sign
+    const signature = await config.key.sign(Buffer.from(base));
+    const headerNames = signatureBase.map(([key]) => key);
+    // there is a somewhat deliberate and intentional deviation from spec here:
+    // If no headers (config.fields) are specified, the spec allows for it to be *inferred*
+    // that the (created) value is used, I don't like that and would rather be explicit
+    const header = [
+        ...Array.from(signingParameters.entries()).map(([name, value]) => {
+            if (name === 'alg') {
+                return `algorithm="${mapHttpbisAlgorithm(value)}"`;
+            }
+            if (name === 'keyid') {
+                return `keyId="${value}"`;
+            }
+            if (typeof value === 'number') {
+                return `${name}=${value}`;
+            }
+            return `${name}="${value.toString()}"`;
+        }),
+        `headers="${headerNames.join(' ')}"`,
+        `signature="${signature.toString('base64')}"`,
+    ].join(',');
+    return {
+        ...message,
+        headers: {
+            ...message.headers,
+            Signature: header,
+        },
+    };
+}
+async function verifyMessage(config, message) {
+    const header = Object.entries(message.headers).find(([name]) => name.toLowerCase() === 'signature');
+    if (!header) {
+        return null;
+    }
+    const parsedHeader = (Array.isArray(header[1]) ? header[1].join(', ') : header[1]).split(',').reduce((parts, value) => {
+        const [key, ...values] = value.trim().split('=');
+        if (parts.has(key)) {
+            throw new Error('Same parameter defined repeatedly');
+        }
+        const val = values.join('=').replace(/^"(.*)"$/, '$1');
+        switch (key.toLowerCase()) {
+            case 'created':
+            case 'expires':
+                parts.set(key, parseInt(val, 10));
+                break;
+            default:
+                parts.set(key, val);
+        }
+        return parts;
+    }, new Map());
+    if (!parsedHeader.has('signature')) {
+        throw new Error('Missing signature from header');
+    }
+    const baseParts = new Map(createSignatureBase((parsedHeader.get('headers') ?? '(created)').split(' ').map((component) => {
+        return component.toLowerCase().replace(/^\((.*)\)$/, '@$1');
+    }), message, parsedHeader));
+    const base = formatSignatureBase(Array.from(baseParts.entries()));
+    const now = Math.floor(Date.now() / 1000);
+    const tolerance = config.tolerance ?? 0;
+    const notAfter = config.notAfter instanceof Date ? Math.floor(config.notAfter.getTime() / 1000) : config.notAfter ?? now;
+    const maxAge = config.maxAge ?? null;
+    const requiredParams = config.requiredParams ?? [];
+    const requiredFields = config.requiredFields ?? [];
+    const hasRequiredParams = requiredParams.every((param) => baseParts.has(param));
+    if (!hasRequiredParams) {
+        return false;
+    }
+    // this could be tricky, what if we say "@method" but there is "@method;req"
+    const hasRequiredFields = requiredFields.every((field) => {
+        return parsedHeader.has(field.toLowerCase().replace(/^@(.*)/, '($1)'));
+    });
+    if (!hasRequiredFields) {
+        return false;
+    }
+    if (parsedHeader.has('created')) {
+        const created = parsedHeader.get('created') - tolerance;
+        // maxAge overrides expires.
+        // signature is older than maxAge
+        if (maxAge && created - now > maxAge) {
+            return false;
+        }
+        // created after the allowed time (ie: created in the future)
+        if (created > notAfter) {
+            return false;
+        }
+    }
+    if (parsedHeader.has('expires')) {
+        const expires = parsedHeader.get('expires') + tolerance;
+        // expired signature
+        if (expires > now) {
+            return false;
+        }
+    }
+    // now look to verify the signature! Build the expected "signing base" and verify it!
+    const params = Array.from(parsedHeader.entries()).reduce((params, [key, value]) => {
+        let keyName = key;
+        let val;
+        switch (key.toLowerCase()) {
+            case 'created':
+            case 'expires':
+                val = new Date(value * 1000);
+                break;
+            case 'signature':
+            case 'headers':
+                return params;
+            case 'algorithm':
+                keyName = 'alg';
+                val = mapCavageAlgorithm(value);
+                break;
+            case 'keyid':
+                keyName = 'keyid';
+                val = value;
+                break;
+            default: {
+                if (typeof value === 'string' || typeof value === 'number') {
+                    val = value;
+                }
+                else {
+                    val = value.toString();
+                }
+            }
+        }
+        return Object.assign(params, {
+            [keyName]: val,
+        });
+    }, {});
+    const key = await config.keyLookup(params);
+    return key?.verify(Buffer.from(base), Buffer.from(parsedHeader.get('signature'), 'base64'), params) ?? null;
+}
+//# sourceMappingURL=index.js.map

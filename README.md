@@ -206,6 +206,23 @@ Cache-Control: no-cache
 
 *If you use an invalid or missing header or token, the server will respond with `401 Unauthorized`.*
 
+## Approov Message Signing
+
+If your Approov account enables HTTP Message Signatures, this server can verify the signed request
+data for both **install** and **account** signing modes.
+
+- **Install message signing** uses the `ipk` claim inside the Approov token. When the claim is
+  present, requests must include a `Signature` and `Signature-Input` header with an `install`
+  signature entry, signed with the install key.
+- **Account message signing** is enabled by setting `APPROOV_ACCOUNT_PUBLIC_KEY_BASE64` (base64 DER
+  or PEM). When set, requests must include an `account` signature entry in the same headers.
+
+Both signatures must use `ecdsa-p256-sha256` and include `created` and `expires` parameters. You can
+adjust the allowed clock skew with `APPROOV_MESSAGE_SIGNING_TOLERANCE_SECONDS` (default `60`).
+
+If a `Content-Digest` header is present, the server validates the body digest before verifying the
+message signatures.
+
 ## Enable or Disable Approov Protection      
 
 When the example server is running on `localhost:8080`, you can toggle Approov protection with these commands:

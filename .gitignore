@@ -1,4 +1,7 @@
 .env
 node_modules/
+!vendor/http-message-signatures/node_modules/
+!vendor/http-message-signatures/node_modules/structured-headers/
+!vendor/http-message-signatures/node_modules/structured-headers/**
 .config/
 .DS_Store
