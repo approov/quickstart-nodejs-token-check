@@ -10,7 +10,7 @@ const structuredHeaders = require('./vendor/http-message-signatures/node_modules
 loadEnvFile(path.join(__dirname, '.env'));
 
 const SERVER_HOSTNAME = process.env.SERVER_HOSTNAME || 'localhost';
-const HTTP_PORT = parsePort(process.env.HTTP_PORT, 8080);
+const HTTP_PORT = parsePort(process.env.HTTP_PORT, 8111);
 
 const APPROOV_SECRET_BASE64URL =
   process.env.APPROOV_BASE64URL_SECRET || process.env.APPROOV_BASE64_SECRET;

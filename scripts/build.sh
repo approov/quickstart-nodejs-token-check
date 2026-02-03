@@ -17,7 +17,7 @@ info() { echo "info $*"; }               # lightweight logging helper
 RUN_MODE="${RUN_MODE:-host}"                       # host orchestrator vs container entrypoint
 APP_START_CMD="${APP_START_CMD:-}"                 # command executed when inside container                       
 FOLLOW_LOGS="${FOLLOW_LOGS:-true}"                 # toggle docker logs -f attachment
-HOST_PORT="${HOST_PORT:-8080}"                     # host-facing port (e.g., http://localhost:3000)
+HOST_PORT="${HOST_PORT:-8111}"                     # host-facing port (e.g., http://localhost:3000)
 WAIT_URL="${WAIT_URL:-http://localhost:${HOST_PORT}/approov-state}" # readiness probe target
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-60}"                   # how long to wait before failing readiness
 WAIT_INTERVAL="${WAIT_INTERVAL:-2}"                   # delay between readiness checks

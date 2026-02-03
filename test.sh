@@ -18,14 +18,14 @@ set -o pipefail
 #
 # Environment:
 #   BASE_URL:
-#     Base URL of the API under test. Default: http://localhost:8080
+#     Base URL of the API under test. Default: http://localhost:8111
 #   TOKDIR:
 #     Directory where temporary token files are stored. Default: .config
 #     LOGDIR=${TOKDIR}/logs, LOGFILE=${LOGDIR}/<timestamp>.log
 #######################################
 
 # Constants
-readonly BASE_URL="${BASE_URL:-http://localhost:8080}"
+readonly BASE_URL="${BASE_URL:-http://localhost:8111}"
 readonly TOKDIR="${TOKDIR:-.config}"
 readonly LOGDIR="${TOKDIR}/logs"
 readonly LOGFILE="${LOGDIR}/$(date '+%Y-%m-%d_%H-%M-%S').log"

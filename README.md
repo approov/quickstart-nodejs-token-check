@@ -4,6 +4,7 @@ This project provides a server-side example of Approov token verification for a 
 
  - `/unprotected` - no Approov token required.
  - `/token-check` - requires a valid Approov token.
+ - `/token-check-signature` - requires a valid Approov token and HTTP message signature.
  - `/token-binding` - requires a valid Approov token which is bound to a header value.
  - `/token-double-binding` - requires a valid Approov token which is bound to two header values.
 
@@ -90,7 +91,7 @@ This script:
 *The following example shows how the API responds when no Approov protection is applied.*
 
 ```bash
-curl -iX GET http://localhost:8080/unprotected
+curl -iX GET http://localhost:8111/unprotected
 ```
 
 The response will be `200 OK` for this request:
@@ -121,7 +122,7 @@ approov token -genExample example.com
 *Use the generated token in the `Approov-Token` header and `/token-check` endpoint.*
 
 ```bash
-curl -iX GET http://localhost:8080/token-check \
+curl -iX GET http://localhost:8111/token-check \
      -H "Approov-Token: valid_approov_token_here"
 ```
 
@@ -155,7 +156,7 @@ approov token -setDataHashInToken ExampleAuthToken== -genExample example.com
 *Use the generated token with binding in the Approov-Token and Authorization headers when calling the /token-binding endpoint.*
 
 ```bash
-curl -iX GET http://localhost:8080/token-binding \
+curl -iX GET http://localhost:8111/token-binding \
      -H "Approov-Token: valid_approov_token_here" \
      -H "Authorization: ExampleAuthToken=="
 ```
@@ -190,7 +191,7 @@ approov token -setDataHashInToken ExampleAuthToken==ContentDigest== -genExample 
 *Use the generated token with two bindings in the Approov-Token and Authorization headers when calling the `/token-double-binding` endpoint.*
 
 ```bash
-curl -iX GET http://localhost:8080/token-double-binding \
+curl -iX GET http://localhost:8111/token-double-binding \
      -H "Approov-Token: valid_approov_token_here" \
      -H "Authorization: ExampleAuthToken==" \
      -H "Content-Digest: ContentDigest=="
@@ -223,16 +224,22 @@ adjust the allowed clock skew with `APPROOV_MESSAGE_SIGNING_TOLERANCE_SECONDS` (
 If a `Content-Digest` header is present, the server validates the body digest before verifying the
 message signatures.
 
-## Enable or Disable Approov Protection      
-
-When the example server is running on `localhost:8080`, you can toggle Approov protection with these commands:
+To exercise the message signing flow with an `ipk` claim, run:
 
 ```bash
-curl -X POST http://localhost:8080/approov/disable    # disable the Approov service
+bash test-message-signing.sh
+```
 
-curl -X POST http://localhost:8080/approov/enable     # enable the Approov service
+## Enable or Disable Approov Protection      
 
-curl -X GET http://localhost:8080/approov-state       # check current state
+When the example server is running on `localhost:8111`, you can toggle Approov protection with these commands:
+
+```bash
+curl -X POST http://localhost:8111/approov/disable    # disable the Approov service
+
+curl -X POST http://localhost:8111/approov/enable     # enable the Approov service
+
+curl -X GET http://localhost:8111/approov-state       # check current state
 ```
 
 *You can rerun the tests with Approov disabled to observe how the application behaves when the Approov protection is ***no longer active***.*
