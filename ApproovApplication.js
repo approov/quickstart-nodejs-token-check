@@ -401,7 +401,7 @@ async function verifyMessageSignatures(ctx, claims) {
 
   if (!shouldVerifyInstall && !shouldVerifyAccount) {
     logVerbose(ctx, 'signature', 'skip', 'No install ipk or account key id available.');
-    return;
+    throw new Error('Message signing required but no signing claims present.');
   }
 
   if (shouldVerifyAccount && !APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET) {
@@ -555,19 +555,24 @@ function buildRequestUrl(req) {
   const forwardedProto = firstHeaderValue(req.headers['x-forwarded-proto']);
   const forwardedHost = firstHeaderValue(req.headers['x-forwarded-host']);
   const forwarded = firstHeaderValue(req.headers['forwarded']);
+  const forwardedHostFromForwarded = parseForwardedParam(forwarded, 'host');
 
   let scheme = forwardedProto;
   if (!scheme && forwarded) {
-    const match = forwarded.match(/proto=([^;]+)/i);
-    if (match) {
-      scheme = match[1];
+    const forwardedProtoFromForwarded = parseForwardedParam(forwarded, 'proto');
+    if (forwardedProtoFromForwarded) {
+      scheme = forwardedProtoFromForwarded;
     }
   }
   if (!scheme) {
     scheme = req.socket && req.socket.encrypted ? 'https' : 'http';
   }
 
-  const host = forwardedHost || req.headers.host || `${SERVER_HOSTNAME}:${HTTP_PORT}`;
+  const host =
+    forwardedHost ||
+    forwardedHostFromForwarded ||
+    req.headers.host ||
+    `${SERVER_HOSTNAME}:${HTTP_PORT}`;
   return `${scheme}://${host}${req.url || '/'}`;
 }
 
@@ -910,6 +915,36 @@ function toBuffer(chunk, encoding) {
     return Buffer.from(chunk, encoding);
   }
   return Buffer.from(String(chunk));
+}
+
+function parseForwardedParam(forwardedValue, key) {
+  if (!hasText(forwardedValue) || !hasText(key)) {
+    return null;
+  }
+
+  const targetKey = key.toLowerCase();
+  const entry = forwardedValue.split(',')[0];
+  const pairs = entry.split(';');
+  for (const pair of pairs) {
+    const trimmed = pair.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const index = trimmed.indexOf('=');
+    if (index <= 0) {
+      continue;
+    }
+    const paramKey = trimmed.slice(0, index).trim().toLowerCase();
+    if (paramKey !== targetKey) {
+      continue;
+    }
+    let value = trimmed.slice(index + 1).trim();
+    if (value.startsWith('"') && value.endsWith('"')) {
+      value = value.slice(1, -1);
+    }
+    return value;
+  }
+  return null;
 }
 
 function firstHeaderValue(value) {
