@@ -176,6 +176,12 @@ server.listen(HTTP_PORT, SERVER_HOSTNAME, () => {
   );
 });
 
+/**
+ * Handles the unauthenticated root endpoint used as a simple health check.
+ * We keep this route outside Approov enforcement so operators can verify the
+ * server is reachable without a valid Approov token or message signature.
+ * The response mirrors the current port to make it clear which instance replied.
+ */
 function homeHandler(ctx) {
   writeJson(
     ctx.res,
@@ -184,32 +190,62 @@ function homeHandler(ctx) {
   );
 }
 
+/**
+ * Returns the current in-memory enforcement toggles.
+ * This is intended for demos/tests to confirm whether Approov checks and
+ * token binding are enabled before running scripted requests.
+ */
 function approovStateHandler(ctx) {
   writeJson(ctx.res, 200, statePayload());
 }
 
+/**
+ * Enables Approov token verification and token binding in one operation.
+ * Approov is the primary access gate, so we also re-enable binding here to
+ * keep the demo in a consistent "fully protected" state.
+ */
 function enableApproovHandler(ctx) {
   approovEnabled = true;
   tokenBindingEnabled = true;
   writeJson(ctx.res, 200, statePayload());
 }
 
+/**
+ * Disables Approov token verification and binding.
+ * This is a demo/testing switch only; in production you would not expose
+ * an endpoint that bypasses token and binding checks.
+ */
 function disableApproovHandler(ctx) {
   approovEnabled = false;
   tokenBindingEnabled = false;
   writeJson(ctx.res, 200, statePayload());
 }
 
+/**
+ * Enables token binding checks while leaving Approov token verification on.
+ * Token binding proves possession of a client-bound value (for example an
+ * Authorization header) that was hashed into the Approov token pay claim.
+ */
 function enableTokenBindingHandler(ctx) {
   tokenBindingEnabled = true;
   writeJson(ctx.res, 200, statePayload());
 }
 
+/**
+ * Disables token binding checks while keeping Approov token verification on.
+ * This is useful for testing that plain token validation still succeeds even
+ * when the bound header is missing or intentionally mismatched.
+ */
 function disableTokenBindingHandler(ctx) {
   tokenBindingEnabled = false;
   writeJson(ctx.res, 200, statePayload());
 }
 
+/**
+ * Demonstrates an endpoint that does not require Approov.
+ * This is useful to show the contrast between protected and unprotected routes
+ * when validating client integrations and automated tests.
+ */
 function unprotectedHandler(ctx) {
   writeJson(
     ctx.res,
@@ -218,6 +254,11 @@ function unprotectedHandler(ctx) {
   );
 }
 
+/**
+ * Basic Approov-protected endpoint.
+ * The Approov middleware has already validated the JWT signature and exp claim
+ * before this handler is invoked, so we simply return a success payload.
+ */
 function tokenCheckHandler(ctx) {
   writeJson(
     ctx.res,
@@ -226,6 +267,11 @@ function tokenCheckHandler(ctx) {
   );
 }
 
+/**
+ * Approov-protected endpoint that also requires HTTP Message Signatures.
+ * This is the strictest path in the demo: it validates the Approov token and
+ * then enforces a request signature bound to the Approov message-signing claims.
+ */
 function tokenCheckSignatureHandler(ctx) {
   writeJson(
     ctx.res,
@@ -236,6 +282,11 @@ function tokenCheckSignatureHandler(ctx) {
   );
 }
 
+/**
+ * Approov-protected endpoint that enforces token binding against Authorization.
+ * We echo whether the Authorization header was present to make debugging
+ * token binding and binding header selection easier during integration.
+ */
 function tokenBindingHandler(ctx) {
   const authorization = headerValue(ctx.headers, HEADER_NAMES.AUTHORIZATION);
   const response = infoPayload(
@@ -245,6 +296,11 @@ function tokenBindingHandler(ctx) {
   writeJson(ctx.res, 200, response);
 }
 
+/**
+ * Approov-protected endpoint that enforces a composite binding.
+ * The binding material is the Authorization header plus Content-Digest, which
+ * demonstrates binding multiple pieces of request metadata into the pay claim.
+ */
 function tokenDoubleBindingHandler(ctx) {
   const authorization = headerValue(ctx.headers, HEADER_NAMES.AUTHORIZATION);
   const contentDigest = headerValue(ctx.headers, HEADER_NAMES.CONTENT_DIGEST);
@@ -256,6 +312,13 @@ function tokenDoubleBindingHandler(ctx) {
   writeJson(ctx.res, 200, response);
 }
 
+/**
+ * Middleware that enforces Approov token verification, optional token binding,
+ * and optional HTTP Message Signatures depending on the current route.
+ * Approov tokens are JWTs signed with a shared secret (HS256) and include
+ * claims such as exp (expiry), ipk (install public key), and mskid (account key id).
+ * Successful validation attaches the decoded claims to ctx.state for handlers.
+ */
 async function approovTokenVerifier(ctx, next) {
   const route = ctx.route;
   if (!route || !route.requiresApproov) {
@@ -322,6 +385,13 @@ async function approovTokenVerifier(ctx, next) {
   await next();
 }
 
+/**
+ * Validates the Approov JWT using the shared secret and standard JWT rules.
+ * We explicitly require HS256 because Approov tokens in this demo are HMAC based
+ * and rejecting other algorithms prevents algorithm substitution attacks.
+ * The JWT signature is recomputed and compared using timing-safe equality, then
+ * we enforce the exp claim to avoid accepting expired tokens.
+ */
 function verifyApproovToken(token) {
   const parsed = parseJwt(token);
 
@@ -340,6 +410,11 @@ function verifyApproovToken(token) {
   return parsed.payload;
 }
 
+/**
+ * Splits a JWT into header, payload, and signature and decodes the base64url parts.
+ * We also return the signing input (header.payload) so HMAC verification can
+ * be performed exactly as the token was produced.
+ */
 function parseJwt(token) {
   const parts = token.split('.');
   if (parts.length !== 3) {
@@ -359,10 +434,20 @@ function parseJwt(token) {
   };
 }
 
+/**
+ * Indicates whether a route expects token binding.
+ * Binding is only enforced for the binding demo endpoints to keep other routes
+ * focused on token verification or message signing alone.
+ */
 function needsBindingCheck(pathname) {
   return pathname === '/token-binding' || pathname === '/token-double-binding';
 }
 
+/**
+ * Extracts the header material that was bound into the Approov token pay claim.
+ * For the single-binding route we use Authorization alone; for the double-binding
+ * route we concatenate Authorization and Content-Digest to create the bound value.
+ */
 function extractBindingValue(pathname, headers) {
   if (pathname === '/token-binding') {
     return trimOrNull(headerValue(headers, HEADER_NAMES.AUTHORIZATION));
@@ -382,6 +467,11 @@ function extractBindingValue(pathname, headers) {
   return authorization + digest;
 }
 
+/**
+ * Validates the token binding by comparing the pay claim with a hash of the
+ * bound header value. Approov binding uses SHA-256 and base64 encoding, so we
+ * compute the same and compare using timing-safe equality to reduce side-channels.
+ */
 function isBindingValid(bindingValue, claims) {
   const expected = typeof claims.pay === 'string' ? claims.pay.trim() : '';
   if (!hasText(expected)) {
@@ -393,6 +483,14 @@ function isBindingValid(bindingValue, claims) {
   return safeStringEqual(expected, computed);
 }
 
+/**
+ * Enforces Approov HTTP Message Signatures using RFC 9421 semantics.
+ * Approov can sign with an install key (ipk claim, ECDSA) or an account key
+ * (mskid claim with shared secret, HMAC). We prefer install signatures when present
+ * and fall back to account signatures only when ipk is missing.
+ * Signature headers are parsed as Structured Headers and verified with
+ * http-message-signatures, including Content-Digest validation when present.
+ */
 async function verifyMessageSignatures(ctx, claims) {
   const installPublicKey = loadInstallPublicKey(claims);
   const accountKeyId = typeof claims.mskid === 'string' ? claims.mskid.trim() : '';
@@ -400,6 +498,14 @@ async function verifyMessageSignatures(ctx, claims) {
   const shouldVerifyAccount = !shouldVerifyInstall && hasText(accountKeyId);
 
   if (!shouldVerifyInstall && !shouldVerifyAccount) {
+    // ================================================================
+    // PRODUCTION NOTE:
+    // Some clients may unintentionally omit message signatures because
+    // their device could not generate the install key-pair (ipk). In that
+    // case the SDK may skip message signing entirely. How you handle those
+    // requests (reject, allow, or fallback to account-level signing) is a
+    // customer policy decision.
+    // ================================================================
     logVerbose(ctx, 'signature', 'skip', 'No install ipk or account key id available.');
     throw new Error('Message signing required but no signing claims present.');
   }
@@ -478,6 +584,11 @@ async function verifyMessageSignatures(ctx, claims) {
   }
 }
 
+/**
+ * Loads the install public key from the Approov ipk claim.
+ * The claim is a base64url-encoded SPKI DER key, which we convert to a KeyObject
+ * so Node.js crypto can verify ECDSA signatures.
+ */
 function loadInstallPublicKey(claims) {
   const publicKeyB64 =
     typeof claims.ipk === 'string' ? claims.ipk.trim() : '';
@@ -487,6 +598,12 @@ function loadInstallPublicKey(claims) {
   return createPublicKeyFromValue(publicKeyB64, 'Approov install public key');
 }
 
+/**
+ * Verifies a single Signature/Signature-Input entry by name (install or account).
+ * We build a canonical request, pass the verification key and required params,
+ * and rely on http-message-signatures to validate the signature base and params.
+ * The tolerance parameter allows bounded clock skew for created/expires values.
+ */
 async function verifySignatureEntry(
   ctx,
   signatures,
@@ -539,6 +656,11 @@ async function verifySignatureEntry(
   }
 }
 
+/**
+ * Constructs a minimal request object for signature verification.
+ * We re-serialize only the signature entry being verified to avoid interference
+ * from unrelated signature keys and to mirror how the client produced the base.
+ */
 function buildSignatureRequest(ctx, signatureHeader, signatureInputHeader) {
   return {
     method: ctx.method,
@@ -551,6 +673,12 @@ function buildSignatureRequest(ctx, signatureHeader, signatureInputHeader) {
   };
 }
 
+/**
+ * Builds an absolute request URL for signature verification and logging.
+ * HTTP Message Signatures can include derived components like @authority and
+ * @target-uri, so we must reconstruct the public URL as seen by the client.
+ * We honor X-Forwarded-* and RFC 7239 Forwarded headers to support proxies.
+ */
 function buildRequestUrl(req) {
   const forwardedProto = firstHeaderValue(req.headers['x-forwarded-proto']);
   const forwardedHost = firstHeaderValue(req.headers['x-forwarded-host']);
@@ -576,6 +704,11 @@ function buildRequestUrl(req) {
   return `${scheme}://${host}${req.url || '/'}`;
 }
 
+/**
+ * Validates the Content-Digest header (RFC 9530) against the request body.
+ * This ensures payload integrity and is required when the signature input
+ * references content-digest or when clients include it for additional safety.
+ */
 async function verifyContentDigest(ctx) {
   const header = headerValue(ctx.headers, HEADER_NAMES.CONTENT_DIGEST);
   if (!hasText(header)) {
@@ -632,6 +765,11 @@ async function verifyContentDigest(ctx) {
   }
 }
 
+/**
+ * Reads and caches the request body so multiple consumers can access it.
+ * We store both the Promise and the resolved buffer to avoid double-reading
+ * the stream when verifying Content-Digest and when logging HTTP exchanges.
+ */
 async function readRequestBody(ctx) {
   if (ctx.state.bodyBuffer) {
     return ctx.state.bodyBuffer;
@@ -655,6 +793,11 @@ async function readRequestBody(ctx) {
   return bodyBuffer;
 }
 
+/**
+ * Ensures the Approov token has a valid exp claim and is not expired.
+ * Approov tokens are time-bound, so exp must be in seconds since epoch and
+ * strictly greater than the current time to be accepted.
+ */
 function validateExpiration(claims) {
   const exp = Number(claims.exp);
   if (!Number.isFinite(exp)) {
@@ -667,6 +810,10 @@ function validateExpiration(claims) {
   }
 }
 
+/**
+ * Builds a standard response fragment describing enforcement state.
+ * This keeps demo handlers consistent and makes responses easier to parse in tests.
+ */
 function statePayload() {
   return {
     approovEnabled,
@@ -674,6 +821,10 @@ function statePayload() {
   };
 }
 
+/**
+ * Adds a human-friendly detail string to the standard state payload.
+ * This helps demo clients confirm which endpoint they hit and which checks ran.
+ */
 function infoPayload(details) {
   return {
     ...statePayload(),
@@ -681,15 +832,27 @@ function infoPayload(details) {
   };
 }
 
+/**
+ * Reads the Approov token from the expected header.
+ * Approov SDKs send the token as "Approov-Token" which Node exposes lowercased.
+ */
 function readApproovToken(headers) {
   return trimOrNull(headerValue(headers, HEADER_NAMES.APPROOV_TOKEN));
 }
 
+/**
+ * Normalizes header values that may be arrays in Node.js.
+ * For our purposes we only care about the first header value.
+ */
 function headerValue(headers, name) {
   const value = headers[name];
   return Array.isArray(value) ? value[0] : value;
 }
 
+/**
+ * Runs middleware in sequence, similar to a tiny Koa-style dispatcher.
+ * Each middleware receives a next() function it must await to continue the chain.
+ */
 async function runMiddleware(ctx, middlewares, handler) {
   let index = -1;
 
@@ -705,6 +868,10 @@ async function runMiddleware(ctx, middlewares, handler) {
   await dispatch();
 }
 
+/**
+ * Extracts path and method for routing.
+ * We build a URL using the Host header so relative URLs can be parsed reliably.
+ */
 function parseRequest(req) {
   const host = req.headers.host || `${SERVER_HOSTNAME}:${HTTP_PORT}`;
   const url = new URL(req.url || '/', `http://${host}`);
@@ -714,10 +881,18 @@ function parseRequest(req) {
   };
 }
 
+/**
+ * Sends a consistent 401 JSON response for authentication failures.
+ * This keeps error handling predictable for demo clients and scripts.
+ */
 function unauthorized(res, message) {
   writeJson(res, 401, { error: 'unauthorized', message });
 }
 
+/**
+ * Serializes and writes JSON with standard headers.
+ * Content-Length is set to avoid chunked encoding surprises in simple clients.
+ */
 function writeJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
@@ -728,10 +903,18 @@ function writeJson(res, statusCode, payload) {
   res.end(body);
 }
 
+/**
+ * Computes an HMAC-SHA256 signature of the JWT signing input.
+ * Approov tokens in this demo are HS256, so this reproduces the expected signature.
+ */
 function signHmac(value, secret) {
   return crypto.createHmac('sha256', secret).update(value).digest();
 }
 
+/**
+ * Hashes a string with SHA-256 and returns base64 output.
+ * Approov token binding uses this exact hash+base64 format for the pay claim.
+ */
 function hashBase64(value) {
   return crypto
     .createHash('sha256')
@@ -739,6 +922,10 @@ function hashBase64(value) {
     .digest('base64');
 }
 
+/**
+ * Compares two buffers using timing-safe equality.
+ * This avoids leaking partial match information when verifying signatures.
+ */
 function bufferEquals(left, right) {
   if (!Buffer.isBuffer(left) || !Buffer.isBuffer(right)) {
     return false;
@@ -749,6 +936,10 @@ function bufferEquals(left, right) {
   return crypto.timingSafeEqual(left, right);
 }
 
+/**
+ * Performs a timing-safe comparison of two non-empty strings.
+ * Empty values are rejected to avoid false positives in security checks.
+ */
 function safeStringEqual(left, right) {
   if (!hasText(left) || !hasText(right)) {
     return false;
@@ -756,6 +947,10 @@ function safeStringEqual(left, right) {
   return bufferEquals(Buffer.from(left), Buffer.from(right));
 }
 
+/**
+ * Parses a JSON string with a clearer error message on failure.
+ * This is used for JWT header and payload decoding to produce precise errors.
+ */
 function parseJson(value, label) {
   try {
     return JSON.parse(value);
@@ -764,10 +959,18 @@ function parseJson(value, label) {
   }
 }
 
+/**
+ * Decodes a base64url string to UTF-8 text.
+ * JWT header and payload sections are base64url-encoded JSON.
+ */
 function base64UrlDecodeToString(value) {
   return base64UrlDecodeToBuffer(value).toString('utf8');
 }
 
+/**
+ * Decodes a base64url string into a Buffer.
+ * We normalize URL-safe characters and apply required padding before decoding.
+ */
 function base64UrlDecodeToBuffer(value) {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized.padEnd(
@@ -777,6 +980,10 @@ function base64UrlDecodeToBuffer(value) {
   return Buffer.from(padded, 'base64');
 }
 
+/**
+ * Writes verbose, contextual logs when enabled.
+ * We include the method/path prefix to tie logs back to a specific request.
+ */
 function logVerbose(ctx, area, step, message) {
   if (!VERBOSE_LOGGING) {
     return;
@@ -785,6 +992,10 @@ function logVerbose(ctx, area, step, message) {
   console.log(`${prefix} ${area}:${step} ${message}`);
 }
 
+/**
+ * Logs structured details of the Signature-Input entry.
+ * This helps debug which components and parameters were used in the signature base.
+ */
 function logSignatureInputDetails(ctx, signatureName, signatureInputEntry) {
   if (!VERBOSE_LOGGING) {
     return;
@@ -807,6 +1018,10 @@ function logSignatureInputDetails(ctx, signatureName, signatureInputEntry) {
   );
 }
 
+/**
+ * Computes and logs a hash of the signature base for debugging.
+ * Comparing this value with the client helps diagnose canonicalization mismatches.
+ */
 function logSignatureBaseHash(ctx, signatureName, signatureRequest, signatureInputEntry) {
   if (!VERBOSE_LOGGING) {
     return;
@@ -846,6 +1061,10 @@ function logSignatureBaseHash(ctx, signatureName, signatureRequest, signatureInp
   }
 }
 
+/**
+ * Wraps the response stream to capture and log full HTTP exchanges.
+ * This is intended for debugging message signing and payload digest mismatches.
+ */
 function enableHttpLogging(ctx) {
   if (!HTTP_LOGGING_ENABLED) {
     return;
@@ -873,6 +1092,10 @@ function enableHttpLogging(ctx) {
   };
 }
 
+/**
+ * Logs the request/response pair with headers and bodies.
+ * Uses buildRequestUrl to reflect the public URL used for signature verification.
+ */
 function logHttpExchange(ctx, responseBody, startTime) {
   if (!HTTP_LOGGING_ENABLED) {
     return;
@@ -907,6 +1130,10 @@ function logHttpExchange(ctx, responseBody, startTime) {
     });
 }
 
+/**
+ * Normalizes response chunks into Buffer form.
+ * This keeps logging code simple regardless of whether chunks are strings or Buffers.
+ */
 function toBuffer(chunk, encoding) {
   if (Buffer.isBuffer(chunk)) {
     return chunk;
@@ -917,6 +1144,10 @@ function toBuffer(chunk, encoding) {
   return Buffer.from(String(chunk));
 }
 
+/**
+ * Parses a parameter from the RFC 7239 Forwarded header.
+ * We only inspect the first Forwarded entry because it represents the client-facing hop.
+ */
 function parseForwardedParam(forwardedValue, key) {
   if (!hasText(forwardedValue) || !hasText(key)) {
     return null;
@@ -947,6 +1178,10 @@ function parseForwardedParam(forwardedValue, key) {
   return null;
 }
 
+/**
+ * Returns the first header value from a potentially comma-separated list.
+ * Proxies often append values; we only use the first for scheme/host reconstruction.
+ */
 function firstHeaderValue(value) {
   if (!value) {
     return null;
@@ -958,6 +1193,10 @@ function firstHeaderValue(value) {
   return raw.split(',')[0].trim();
 }
 
+/**
+ * Converts a PEM or base64url-encoded SPKI key into a KeyObject.
+ * Approov ipk claims are DER-encoded keys, while some tooling may supply PEM.
+ */
 function createPublicKeyFromValue(value, label) {
   const trimmed = value.trim();
   try {
@@ -971,6 +1210,11 @@ function createPublicKeyFromValue(value, label) {
   }
 }
 
+/**
+ * Loads the account-level message signing secret from environment variables.
+ * Approov supports raw, base64, or base64url encodings; we accept all three for
+ * flexibility and exit early if decoding fails to avoid silent misconfiguration.
+ */
 function loadAccountMessageSigningSecret() {
   const secretValue =
     APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL ||
@@ -995,6 +1239,10 @@ function loadAccountMessageSigningSecret() {
   }
 }
 
+/**
+ * Parses a port number with a safe fallback.
+ * Invalid input returns the default to keep the demo server predictable.
+ */
 function parsePort(value, fallback) {
   if (!hasText(value)) {
     return fallback;
@@ -1003,6 +1251,10 @@ function parsePort(value, fallback) {
   return Number.isFinite(port) ? port : fallback;
 }
 
+/**
+ * Parses a non-negative integer with a fallback.
+ * Used for configurable tolerance values such as message-signing clock skew.
+ */
 function parsePositiveInt(value, fallback) {
   if (!hasText(value)) {
     return fallback;
@@ -1011,6 +1263,10 @@ function parsePositiveInt(value, fallback) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+/**
+ * Parses common boolean environment values (true/false, 1/0, yes/no, on/off).
+ * Unrecognized values fall back to the provided default.
+ */
 function parseBoolean(value, fallback) {
   if (value == null) {
     return fallback;
@@ -1025,14 +1281,27 @@ function parseBoolean(value, fallback) {
   return fallback;
 }
 
+/**
+ * Returns true when a value is a non-empty, non-whitespace string.
+ * This is used throughout to validate required configuration and headers.
+ */
 function hasText(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/**
+ * Trims a string or returns null for null/undefined.
+ * This keeps header handling uniform without adding special-case checks.
+ */
 function trimOrNull(value) {
   return value == null ? null : value.trim();
 }
 
+/**
+ * Minimal .env loader used instead of dotenv to keep the example self-contained.
+ * We avoid overwriting existing process.env values so explicit environment
+ * configuration takes precedence over the local file.
+ */
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) {
     return;
