@@ -12,21 +12,15 @@ const HTTP_PORT = parsePort(process.env.HTTP_PORT, 8080);
 
 const APPROOV_SECRET_BASE64URL =
   process.env.APPROOV_BASE64URL_SECRET || process.env.APPROOV_BASE64_SECRET;
-
-if (!hasText(APPROOV_SECRET_BASE64URL)) {
-  console.error('APPROOV_BASE64URL_SECRET environment variable is not set');
-  process.exit(1);
-}
-
-const APPROOV_SECRET = base64UrlDecodeToBuffer(APPROOV_SECRET_BASE64URL.trim());
+const APPROOV_SECRET = resolveApproovSecret(APPROOV_SECRET_BASE64URL);
 
 let approovEnabled = true;
 let tokenBindingEnabled = true;
 
 const HEADER_NAMES = Object.freeze({
-  APPROOV_TOKEN: 'approov-token',
-  AUTHORIZATION: 'authorization',
-  CONTENT_DIGEST: 'content-digest',
+  APPROOV_TOKEN: 'Approov-Token',
+  AUTHORIZATION: 'Authorization',
+  SESSION_ID: 'SessionId',
 });
 
 const ROUTES = Object.freeze([
@@ -78,12 +72,14 @@ const ROUTES = Object.freeze([
     path: '/token-binding',
     handler: tokenBindingHandler,
     requiresApproov: true,
+    bindingHeaders: [HEADER_NAMES.AUTHORIZATION],
   },
   {
     method: 'GET',
     path: '/token-double-binding',
     handler: tokenDoubleBindingHandler,
     requiresApproov: true,
+    bindingHeaders: [HEADER_NAMES.AUTHORIZATION, HEADER_NAMES.SESSION_ID,],
   },
 ]);
 
@@ -111,6 +107,7 @@ const server = http.createServer((req, res) => {
     headers: req.headers,
     state: {},
   };
+  initializeRequestState(ctx);
 
   try {
     runMiddleware(ctx, MIDDLEWARE, route.handler);
@@ -141,22 +138,26 @@ function approovStateHandler(ctx) {
 function enableApproovHandler(ctx) {
   approovEnabled = true;
   tokenBindingEnabled = true;
+  syncRequestState(ctx);
   writeJson(ctx.res, 200, statePayload());
 }
 
 function disableApproovHandler(ctx) {
   approovEnabled = false;
   tokenBindingEnabled = false;
+  syncRequestState(ctx);
   writeJson(ctx.res, 200, statePayload());
 }
 
 function enableTokenBindingHandler(ctx) {
   tokenBindingEnabled = true;
+  syncRequestState(ctx);
   writeJson(ctx.res, 200, statePayload());
 }
 
 function disableTokenBindingHandler(ctx) {
   tokenBindingEnabled = false;
+  syncRequestState(ctx);
   writeJson(ctx.res, 200, statePayload());
 }
 
@@ -187,12 +188,12 @@ function tokenBindingHandler(ctx) {
 
 function tokenDoubleBindingHandler(ctx) {
   const authorization = headerValue(ctx.headers, HEADER_NAMES.AUTHORIZATION);
-  const contentDigest = headerValue(ctx.headers, HEADER_NAMES.CONTENT_DIGEST);
+  const sessionId = headerValue(ctx.headers, HEADER_NAMES.SESSION_ID);
   const response = infoPayload(
     "Protected endpoint '/token-double-binding'; dual token binding enforced."
   );
   response.authorizationHeaderPresent = hasText(authorization);
-  response.contentDigestHeaderPresent = hasText(contentDigest);
+  response.sessionIdHeaderPresent = hasText(sessionId);
   writeJson(ctx.res, 200, response);
 }
 
@@ -210,7 +211,7 @@ function approovTokenVerifier(ctx, next) {
 
   const token = readApproovToken(ctx.headers);
   if (!hasText(token)) {
-    unauthorized(ctx.res, 'Missing Approov-Token header.');
+    unauthorized(ctx, 'missing_approov_token', 'Missing Approov-Token header.');
     return;
   }
 
@@ -218,14 +219,19 @@ function approovTokenVerifier(ctx, next) {
   try {
     claims = verifyApproovToken(token);
   } catch (error) {
-    unauthorized(ctx.res, error.message);
+    unauthorized(ctx, 'token_verification_failed', error.message);
     return;
   }
 
-  if (tokenBindingEnabled && needsBindingCheck(route.path)) {
-    const bindingValue = extractBindingValue(route.path, ctx.headers);
-    if (!hasText(bindingValue) || !isBindingValid(bindingValue, claims)) {
-      unauthorized(ctx.res, 'Invalid token binding.');
+  const bindingHeaders = normalizeBindingHeaders(route.bindingHeaders);
+  if (tokenBindingEnabled && bindingHeaders.length > 0) {
+    const bindingValue = extractBindingValue(ctx.headers, bindingHeaders);
+    if (!hasText(bindingValue)) {
+      unauthorized(ctx, 'missing_binding_header', 'Missing binding header.');
+      return;
+    }
+    if (!isBindingValid(bindingValue, claims)) {
+      unauthorized(ctx, 'binding_mismatch', 'Invalid token binding.');
       return;
     }
   }
@@ -269,27 +275,25 @@ function parseJwt(token) {
   };
 }
 
-function needsBindingCheck(pathname) {
-  return pathname === '/token-binding' || pathname === '/token-double-binding';
+function normalizeBindingHeaders(bindingHeaders) {
+  if (!Array.isArray(bindingHeaders)) {
+    return [];
+  }
+  return bindingHeaders
+    .map((header) => (typeof header === 'string' ? header.trim() : ''))
+    .filter((header) => hasText(header));
 }
 
-function extractBindingValue(pathname, headers) {
-  if (pathname === '/token-binding') {
-    return trimOrNull(headerValue(headers, HEADER_NAMES.AUTHORIZATION));
+function extractBindingValue(headers, bindingHeaders) {
+  const values = [];
+  for (const header of bindingHeaders) {
+    const value = trimOrNull(headerValue(headers, header));
+    if (!hasText(value)) {
+      return null;
+    }
+    values.push(value);
   }
-
-  const authorization = trimOrNull(
-    headerValue(headers, HEADER_NAMES.AUTHORIZATION)
-  );
-  const digest = trimOrNull(
-    headerValue(headers, HEADER_NAMES.CONTENT_DIGEST)
-  );
-
-  if (!hasText(authorization) || !hasText(digest)) {
-    return null;
-  }
-
-  return authorization + digest;
+  return values.join('');
 }
 
 function isBindingValid(bindingValue, claims) {
@@ -314,6 +318,66 @@ function validateExpiration(claims) {
   }
 }
 
+function initializeRequestState(ctx) {
+  syncRequestState(ctx);
+  ctx.state.logSummary = defaultSummaryForRoute(ctx.route, ctx.state);
+  ctx.res.on('finish', () => {
+    const status = ctx.res.statusCode;
+    if (status === 200 || status === 401) {
+      logRequestCompleted(ctx);
+    }
+  });
+}
+
+function syncRequestState(ctx) {
+  ctx.state.approovEnabled = approovEnabled;
+  ctx.state.tokenBindingEnabled = tokenBindingEnabled;
+}
+
+function defaultSummaryForRoute(route, state) {
+  if (!route || !route.requiresApproov) {
+    return 'ok';
+  }
+  if (!state.approovEnabled) {
+    return 'approov_disabled';
+  }
+  return 'approov_ok';
+}
+
+function logRequestCompleted(ctx) {
+  const state = ctx.state;
+  const summary = ctx.state.logSummary || defaultSummaryForRoute(ctx.route, state);
+  const socket = ctx.req.socket;
+  const fields = {
+    summary,
+    method: ctx.method,
+    path: ctx.path,
+    status: ctx.res.statusCode,
+    ip: normalizeIp(socket?.remoteAddress),
+    port: socket?.localPort ?? HTTP_PORT,
+    approovEnabled: state.approovEnabled,
+    tokenBindingEnabled: state.tokenBindingEnabled,
+    required_headers: requiredHeadersForRoute(ctx.route, state),
+  };
+  logInfo('http.request.completed', fields);
+}
+
+function requiredHeadersForRoute(route, state) {
+  if (!route || !route.requiresApproov || !state.approovEnabled) {
+    return [];
+  }
+  const required = [HEADER_NAMES.APPROOV_TOKEN];
+  if (state.tokenBindingEnabled) {
+    const bindingHeaders = normalizeBindingHeaders(route.bindingHeaders);
+    for (const header of bindingHeaders) {
+      if (!required.includes(header)) {
+        required.push(header);
+      }
+    }
+  }
+  return required;
+}
+
 function statePayload() {
   return {
     approovEnabled,
@@ -333,7 +397,10 @@ function readApproovToken(headers) {
 }
 
 function headerValue(headers, name) {
-  const value = headers[name];
+  if (!headers || typeof name !== 'string') {
+    return undefined;
+  }
+  const value = headers[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
 }
 
@@ -361,8 +428,9 @@ function parseRequest(req) {
   };
 }
 
-function unauthorized(res, message) {
-  writeJson(res, 401, { error: 'unauthorized', message });
+function unauthorized(ctx, reason, message) {
+  ctx.state.logSummary = `approov_failed:${reason}`;
+  writeJson(ctx.res, 401, { error: 'unauthorized', message });
 }
 
 function writeJson(res, statusCode, payload) {
@@ -373,6 +441,58 @@ function writeJson(res, statusCode, payload) {
     'Content-Length': Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+function logInfo(event, fields) {
+  const line = formatLogLine(event, fields);
+  console.log(line);
+}
+
+function logError(event, fields) {
+  const line = formatLogLine(event, fields);
+  console.error(line);
+}
+
+function formatLogLine(event, fields) {
+  const timestamp = formatTimestamp(new Date());
+  const formattedFields = formatLogFields(fields);
+  return `[${timestamp}] ${event} ${formattedFields}`;
+}
+
+function formatLogFields(fields) {
+  return Object.entries(fields)
+    .map(([key, value]) => `"${key}":${formatLogValue(value)}`)
+    .join(',');
+}
+
+function formatLogValue(value) {
+  if (value === undefined) {
+    return 'null';
+  }
+  return JSON.stringify(value);
+}
+
+function formatTimestamp(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function normalizeIp(value) {
+  if (!hasText(value)) {
+    return 'unknown';
+  }
+  if (value === '::1') {
+    return '127.0.0.1';
+  }
+  if (value.startsWith('::ffff:')) {
+    return value.slice(7);
+  }
+  return value;
 }
 
 function signHmac(value, secret) {
@@ -422,6 +542,48 @@ function base64UrlDecodeToBuffer(value) {
     '='
   );
   return Buffer.from(padded, 'base64');
+}
+
+function resolveApproovSecret(value) {
+  const placeholder = 'approov_base64url_secret_here';
+  if (!hasText(value) || value.trim() === placeholder) {
+    logError('approov.config', { summary: 'Required secret is not set' });
+    process.exit(1);
+  }
+
+  try {
+    return decodeBase64Secret(value.trim());
+  } catch (error) {
+    logError('approov.config', {
+      summary: 'Required secret is invalid',
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
+}
+
+function decodeBase64Secret(value) {
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(value)) {
+    throw new Error('Secret contains invalid characters.');
+  }
+
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    '='
+  );
+  const buffer = Buffer.from(padded, 'base64');
+  if (buffer.length === 0) {
+    throw new Error('Secret is empty after decoding.');
+  }
+
+  const reencoded = buffer.toString('base64').replace(/=+$/g, '');
+  const normalizedNoPad = normalized.replace(/=+$/g, '');
+  if (reencoded !== normalizedNoPad) {
+    throw new Error('Secret is not valid base64.');
+  }
+
+  return buffer;
 }
 
 function parsePort(value, fallback) {

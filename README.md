@@ -7,7 +7,23 @@ This project provides a server-side example of Approov token verification for a 
  - `/token-binding` - requires a valid Approov token which is bound to a header value.
  - `/token-double-binding` - requires a valid Approov token which is bound to two header values.
 
-In this example, Approov protection is enforced by [approovTokenVerifier](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L199-L235), which reads the `Approov-Token` header, and validates the token `signature` and `exp` claim in  [verifyApproovToken](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L237-L251). Protected endpoints are those with `requiresApproov: true` in [ROUTES](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L32-L88).
+In this example, Approov token check is implemented in `ApproovApplication.js`. The responsibilities break down as follows:
+
+1. **JWT Approov Token validation (signature + expiry)** is implemented in [`verifyApproovToken`](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L243-L257) and [`validateExpiration`](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L309-L319).
+It verifies the HS256 signature and rejects tokens that are missing or past `exp`.
+
+2. **Token binding (pay + hash)** is handled by [`isBindingValid`](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L299-L307) and [`hashBase64`](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L502-L507).
+It computes `base64(sha256(binding_value))` and compares it to `pay` with a timing-safe check.
+
+3. **Middleware enforcement** is done by [`approovTokenVerifier`](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L200-L241).
+Requests without valid token or binding are rejected with `401`.
+
+4. **Binding value selection (what gets hashed)** is in [`normalizeBindingHeaders`](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L278-L285) and [`extractBindingValue`](ApproovApplication.js#L287-L297).
+It uses the headers configured on each protected route (currently `Authorization` for single binding, or `Authorization` + `SessionId` for double binding).
+
+5. **Protected route requirements** are defined in the [`ROUTES` table](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L26-L84) via the `requiresApproov` and `bindingHeaders` fields.
+
+6. **Protected routes are registered** in the [`ROUTE_TABLE` map](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L86-L88) and resolved in the HTTP server handler [`createServer`](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L92-L114).
 
 ## Approov Token Verification Flow
 
@@ -78,7 +94,7 @@ bash test.sh
 This script:
 - Verifies that the `approov` and `curl` commands are installed.
 - Checks Approov status by calling `/approov-state` (enabled vs disabled).
-- Runs endpoint tests against `/unprotected` (no token), `/token-check` (valid/invalid Approov tokens), `/token-binding` (token bound to `Authorization`), and `/token-double-binding` (token bound to `Authorization` + `Content-Digest`).
+- Runs endpoint tests against `/unprotected` (no token), `/token-check` (valid/invalid Approov tokens), `/token-binding` (token bound to `Authorization`), and `/token-double-binding` (token bound to `Authorization` + `SessionId`).
 - Logs full request/response details to `.config/logs/<timestamp>.log`.
 
 #### *1. Unprotected Endpoint (No Approov)*
@@ -175,16 +191,16 @@ Cache-Control: no-cache
 - The client sends three headers on authenticated API calls:
     - `Approov-Token`
     - `Authorization`
-    - `Content-Digest` It is combined with the `Authorization` header to create a stronger binding.
+    - `SessionId` It is combined with the `Authorization` header to create a stronger binding.
 - Both are included in the hash inside the Approov token. This means the server verifies a single hash that covers both authentication credentials.
 - **Use case:** Stronger protection then single binding by tying both headers together.
 
 ***The following example shows how the API responds when an Approov token with two bindings is required.***
 
-*Generate a valid Approov token bound to the `Authorization` and `Content-Digest` headers:*
+*Generate a valid Approov token bound to the `Authorization` and `SessionId` headers:*
 
 ```bash
-approov token -setDataHashInToken ExampleAuthToken==ContentDigest== -genExample example.com
+approov token -setDataHashInToken ExampleAuthToken==123 -genExample example.com
 ```
 
 *Use the generated token with two bindings in the Approov-Token and Authorization headers when calling the `/token-double-binding` endpoint.*
@@ -193,7 +209,7 @@ approov token -setDataHashInToken ExampleAuthToken==ContentDigest== -genExample 
 curl -iX GET http://localhost:8080/token-double-binding \
      -H "Approov-Token: valid_approov_token_here" \
      -H "Authorization: ExampleAuthToken==" \
-     -H "Content-Digest: ContentDigest=="
+     -H "SessionId: 123"
 ```
 
 The response will be `200 OK` for this request.
