@@ -13,10 +13,14 @@ const structured_header_1 = require("../structured-header");
 const types_1 = require("../types");
 const errors_1 = require("../errors");
 /**
- * Components can be derived from requests or responses (which can also be bound to their request).
- * The signature is essentially (component, params, signingSubject, supplementaryData)
+ * Derives a component value defined by HTTP Message Signatures (RFC 9421).
+ * Components like @method, @authority, and @target-uri are canonicalized inputs
+ * to the signature base. Approov uses this machinery to validate that a client
+ * signed the exact request metadata it sent, including method and target URL.
  *
- * @todo - prefer pseudo-headers over parsed urls
+ * Note: derived components can be bound to the associated request when signing
+ * responses (using the "req" parameter), which is why we accept both message
+ * and request objects.
  */
 function deriveComponent(component, params, message, req) {
     // switch the context of the signing data depending on if the `req` flag was passed
@@ -106,6 +110,13 @@ function deriveComponent(component, params, message, req) {
             throw new Error(`Unsupported component "${component}"`);
     }
 }
+/**
+ * Extracts and canonicalizes a header value for the signature base.
+ * Supports structured-field parsing ("sf"/"key" parameters) and binary
+ * serialization ("bs" parameter) as described by RFC 9421.
+ * Approov signatures commonly include headers like "approov-token" or
+ * "content-digest", so this logic must preserve their exact semantics.
+ */
 function extractHeader(header, params, { headers }, req) {
     const context = params.has('req') ? req?.headers : headers;
     if (!context) {
@@ -144,6 +155,11 @@ function extractHeader(header, params, { headers }, req) {
     // raw encoding
     return [values.map((val) => val.trim().replace(/\n\s*/gm, ' ')).join(', ')];
 }
+/**
+ * Normalizes structured-header parameter values into primitives.
+ * The signature base requires deterministic formatting, so ByteSequence and
+ * Token instances are converted to their string forms before use.
+ */
 function normaliseParams(params) {
     const map = new Map;
     params.forEach((value, key) => {
@@ -159,6 +175,12 @@ function normaliseParams(params) {
     });
     return map;
 }
+/**
+ * Builds the ordered signature base (list of component/value pairs).
+ * Each field is parsed as a structured item, then expanded into a concrete
+ * value derived from the request/response or headers. Approov relies on this
+ * canonical base to validate that a signed request was not tampered with.
+ */
 function createSignatureBase(config, res, req) {
     return (config.fields).reduce((base, fieldName) => {
         const [field, params] = (0, structured_headers_1.parseItem)((0, structured_header_1.quoteString)(fieldName));
@@ -177,12 +199,23 @@ function createSignatureBase(config, res, req) {
         return base;
     }, []);
 }
+/**
+ * Formats the signature base into the canonical string for signing/verifying.
+ * Each line is "<quoted-field>: <value>" and the final string is what gets
+ * signed or verified by the cryptographic algorithm.
+ */
 function formatSignatureBase(base) {
     return base.map(([key, value]) => {
         const quotedKey = (0, structured_headers_1.serializeItem)((0, structured_headers_1.parseItem)((0, structured_header_1.quoteString)(key)));
         return value.map((val) => `${quotedKey}: ${val}`).join('\n');
     }).join('\n');
 }
+/**
+ * Produces the signature parameters (created, expires, keyid, alg, etc).
+ * These parameters are embedded in the Signature-Input header and are part of
+ * the signature base. Approov clients and servers must agree on their values
+ * to validate message signatures.
+ */
 function createSigningParameters(config) {
     const now = new Date();
     return (config.params ?? types_1.defaultParams).reduce((params, paramName) => {
@@ -236,6 +269,11 @@ function createSigningParameters(config) {
         return params;
     }, new Map());
 }
+/**
+ * Inserts or appends Signature and Signature-Input headers onto a message.
+ * When existing signatures are present, we preserve their names and add a
+ * unique suffix so multiple signatures can coexist on the same request.
+ */
 function augmentHeaders(headers, signature, signatureInput, name) {
     let signatureHeaderName = 'Signature';
     let signatureInputHeaderName = 'Signature-Input';
@@ -277,6 +315,11 @@ function augmentHeaders(headers, signature, signatureInput, name) {
         [signatureInputHeaderName]: (0, structured_headers_1.serializeDictionary)(inputHeader),
     };
 }
+/**
+ * High-level signing helper: builds the signature base, signs it, and returns
+ * a new message with updated Signature/Signature-Input headers. Approov SDKs
+ * use this flow to attach message signatures to outbound requests.
+ */
 async function signMessage(config, message, req) {
     const signingParameters = createSigningParameters(config);
     const signatureBase = createSignatureBase({
@@ -298,6 +341,12 @@ async function signMessage(config, message, req) {
         headers: augmentHeaders({ ...message.headers }, signature, signatureInput, config.name),
     };
 }
+/**
+ * High-level verification helper: parses signature headers, validates required
+ * parameters and fields, rebuilds the signature base, and verifies the crypto.
+ * Returns null when no signature headers exist, true/false when verification
+ * succeeds/fails, or throws when the signature is malformed.
+ */
 async function verifyMessage(config, message, req) {
     const { signatures, signatureInputs } = Object.entries(message.headers).reduce((accum, [name, value]) => {
         switch (name.toLowerCase()) {
@@ -339,7 +388,10 @@ async function verifyMessage(config, message, req) {
                     [key]: value.toString(),
                 });
             }
-            else if (key === 'created' || key === 'expired') {
+            // Vendored bug note: this repo previously normalized "expired" instead of
+            // the RFC 9421 "expires" parameter. We now accept both for backward
+            // compatibility and to avoid breaking clients that relied on the bug.
+            else if (key === 'created' || key === 'expires' || key === 'expired') {
                 Object.assign(params, {
                     [key]: new Date(value * 1000),
                 });
