@@ -122,12 +122,19 @@ const ROUTES = Object.freeze([
     path: '/token-binding',
     handler: tokenBindingHandler,
     requiresApproov: true,
+    // Token binding can cover multiple headers. The bindingHeaders list is
+    // concatenated (in order), hashed, and compared to the Approov token pay claim.
+    bindingHeaders: [HEADER_NAMES.AUTHORIZATION],
   },
   {
     method: 'GET',
     path: '/token-double-binding',
     handler: tokenDoubleBindingHandler,
     requiresApproov: true,
+    // Example of multi-header binding: Authorization + Session-Id.
+    // Keep headers stable across requests; avoid Content-Digest because the body
+    // can legitimately change and would invalidate the binding.
+    bindingHeaders: [HEADER_NAMES.AUTHORIZATION, HEADER_NAMES.SESSION_ID],
   },
 ]);
 
@@ -357,8 +364,13 @@ async function approovTokenVerifier(ctx, next) {
     return;
   }
 
-  if (tokenBindingEnabled && needsBindingCheck(route.path)) {
-    const bindingValue = extractBindingValue(route.path, ctx.headers);
+  // Binding headers are configured per-route so the server can bind different
+  // endpoints to different header sets without hardcoding path checks.
+  const bindingHeaders = normalizeBindingHeaders(route.bindingHeaders);
+  if (tokenBindingEnabled && bindingHeaders.length > 0) {
+    // Build the binding material by concatenating all required headers.
+    // If any header is missing, we treat the binding as invalid.
+    const bindingValue = extractBindingValue(ctx.headers, bindingHeaders);
     if (!hasText(bindingValue) || !isBindingValid(bindingValue, claims)) {
       logVerbose(ctx, 'binding', 'fail', 'Token binding validation failed.');
       unauthorized(ctx.res, 'Invalid token binding.');
@@ -436,36 +448,40 @@ function parseJwt(token) {
 }
 
 /**
- * Indicates whether a route expects token binding.
- * Binding is only enforced for the binding demo endpoints to keep other routes
- * focused on token verification or message signing alone.
+ * Extracts the header material that was bound into the Approov token pay claim.
+ * The binding is created by concatenating the configured headers (in order) and
+ * hashing the result. This allows binding to multiple headers while keeping
+ * the binding material stable across otherwise mutable request bodies.
  */
-function needsBindingCheck(pathname) {
-  return pathname === '/token-binding' || pathname === '/token-double-binding';
+/**
+ * Normalizes a route's bindingHeaders list into a clean array of header names.
+ * This guards against undefined/null entries and trims whitespace so the
+ * comparison is consistent.
+ */
+function normalizeBindingHeaders(bindingHeaders) {
+  if (!Array.isArray(bindingHeaders)) {
+    return [];
+  }
+  return bindingHeaders
+    .map((header) => (typeof header === 'string' ? header.trim() : ''))
+    .filter((header) => hasText(header));
 }
 
 /**
- * Extracts the header material that was bound into the Approov token pay claim.
- * For the single-binding route we use Authorization alone; for the double-binding
- * route we concatenate Authorization and Content-Digest to create the bound value.
+ * Builds the token binding material by concatenating the configured headers.
+ * The Approov mobile SDK computes the hash of the same concatenation and stores
+ * it in the JWT pay claim; we repeat the process server-side for verification.
  */
-function extractBindingValue(pathname, headers) {
-  if (pathname === '/token-binding') {
-    return trimOrNull(headerValue(headers, HEADER_NAMES.AUTHORIZATION));
+function extractBindingValue(headers, bindingHeaders) {
+  const values = [];
+  for (const header of bindingHeaders) {
+    const value = trimOrNull(headerValue(headers, header));
+    if (!hasText(value)) {
+      return null;
+    }
+    values.push(value);
   }
-
-  const authorization = trimOrNull(
-    headerValue(headers, HEADER_NAMES.AUTHORIZATION)
-  );
-  const sessionId = trimOrNull(
-    headerValue(headers, HEADER_NAMES.SESSION_ID)
-  );
-
-  if (!hasText(authorization) || !hasText(sessionId)) {
-    return null;
-  }
-
-  return authorization + sessionId;
+  return values.join('');
 }
 
 /**
