@@ -79,7 +79,7 @@ bash test.sh
 This script:
 - Verifies that the `approov` and `curl` commands are installed.
 - Checks Approov status by calling `/approov-state` (enabled vs disabled).
-- Runs endpoint tests against `/unprotected` (no token), `/token-check` (valid/invalid Approov tokens), `/token-binding` (token bound to `Authorization`), and `/token-double-binding` (token bound to `Authorization` + `Content-Digest`).
+- Runs endpoint tests against `/unprotected` (no token), `/token-check` (valid/invalid Approov tokens), `/token-binding` (token bound to `Authorization`), and `/token-double-binding` (token bound to `Authorization` + `Session-Id`).
 - Logs full request/response details to `.config/logs/<timestamp>.log`.
 
 #### *1. Unprotected Endpoint (No Approov)*
@@ -176,16 +176,16 @@ Cache-Control: no-cache
 - The client sends three headers on authenticated API calls:
     - `Approov-Token`
     - `Authorization`
-    - `Content-Digest` It is combined with the `Authorization` header to create a stronger binding.
+    - `Session-Id` It is combined with the `Authorization` header to create a stronger binding.
 - Both are included in the hash inside the Approov token. This means the server verifies a single hash that covers both authentication credentials.
 - **Use case:** Stronger protection then single binding by tying both headers together.
 
 ***The following example shows how the API responds when an Approov token with two bindings is required.***
 
-*Generate a valid Approov token bound to the `Authorization` and `Content-Digest` headers:*
+*Generate a valid Approov token bound to the `Authorization` and `Session-Id` headers:*
 
 ```bash
-approov token -setDataHashInToken ExampleAuthToken==ContentDigest== -genExample example.com
+approov token -setDataHashInToken ExampleAuthToken==Session-123 -genExample example.com
 ```
 
 *Use the generated token with two bindings in the Approov-Token and Authorization headers when calling the `/token-double-binding` endpoint.*
@@ -194,7 +194,7 @@ approov token -setDataHashInToken ExampleAuthToken==ContentDigest== -genExample 
 curl -iX GET http://localhost:8111/token-double-binding \
      -H "Approov-Token: valid_approov_token_here" \
      -H "Authorization: ExampleAuthToken==" \
-     -H "Content-Digest: ContentDigest=="
+     -H "Session-Id: Session-123"
 ```
 
 The response will be `200 OK` for this request.

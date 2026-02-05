@@ -61,6 +61,7 @@ const HEADER_NAMES = Object.freeze({
   APPROOV_TOKEN: 'approov-token',
   AUTHORIZATION: 'authorization',
   CONTENT_DIGEST: 'content-digest',
+  SESSION_ID: 'session-id',
   SIGNATURE: 'signature',
   SIGNATURE_INPUT: 'signature-input',
 });
@@ -298,17 +299,17 @@ function tokenBindingHandler(ctx) {
 
 /**
  * Approov-protected endpoint that enforces a composite binding.
- * The binding material is the Authorization header plus Content-Digest, which
- * demonstrates binding multiple pieces of request metadata into the pay claim.
+ * The binding material is the Authorization header plus a stable Session-Id
+ * header, which avoids coupling the binding to a mutable request body.
  */
 function tokenDoubleBindingHandler(ctx) {
   const authorization = headerValue(ctx.headers, HEADER_NAMES.AUTHORIZATION);
-  const contentDigest = headerValue(ctx.headers, HEADER_NAMES.CONTENT_DIGEST);
+  const sessionId = headerValue(ctx.headers, HEADER_NAMES.SESSION_ID);
   const response = infoPayload(
     "Protected endpoint '/token-double-binding'; dual token binding enforced."
   );
   response.authorizationHeaderPresent = hasText(authorization);
-  response.contentDigestHeaderPresent = hasText(contentDigest);
+  response.sessionIdHeaderPresent = hasText(sessionId);
   writeJson(ctx.res, 200, response);
 }
 
@@ -456,15 +457,15 @@ function extractBindingValue(pathname, headers) {
   const authorization = trimOrNull(
     headerValue(headers, HEADER_NAMES.AUTHORIZATION)
   );
-  const digest = trimOrNull(
-    headerValue(headers, HEADER_NAMES.CONTENT_DIGEST)
+  const sessionId = trimOrNull(
+    headerValue(headers, HEADER_NAMES.SESSION_ID)
   );
 
-  if (!hasText(authorization) || !hasText(digest)) {
+  if (!hasText(authorization) || !hasText(sessionId)) {
     return null;
   }
 
-  return authorization + digest;
+  return authorization + sessionId;
 }
 
 /**
