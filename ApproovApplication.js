@@ -36,6 +36,14 @@ const MESSAGE_SIGNING_TOLERANCE_SECONDS = parsePositiveInt(
   process.env.APPROOV_MESSAGE_SIGNING_TOLERANCE_SECONDS,
   60
 );
+const ACCOUNT_SIGNATURE_MODE_ENABLED = parseBoolean(
+  process.env.APPROOV_ENABLE_ACCOUNT_SIGNATURE ??
+    process.env.APPROOV_ACCOUNT_SIGNATURE_ENABLED,
+  false
+);
+const MESSAGE_SIGNATURE_MODE = ACCOUNT_SIGNATURE_MODE_ENABLED
+  ? 'account'
+  : 'install';
 
 const INSTALL_MESSAGE_SIGNING_ALGORITHM = 'ecdsa-p256-sha256';
 const ACCOUNT_MESSAGE_SIGNING_ALGORITHM = 'hmac-sha256';
@@ -509,45 +517,47 @@ function isBindingValid(bindingValue, claims) {
 
 /**
  * Enforces Approov HTTP Message Signatures using RFC 9421 semantics.
- * Approov can sign with an install key (ipk claim, ECDSA) or an account key
- * (mskid claim with shared secret, HMAC). We prefer install signatures when present
- * and fall back to account signatures only when ipk is missing.
+ * The server runs in a single signature mode controlled by environment:
+ * - install mode (default): verifies only the install signature entry.
+ * - account mode: verifies only the account signature entry.
  * Signature headers are parsed as Structured Headers and verified with
  * http-message-signatures, including Content-Digest validation when present.
  */
 async function verifyMessageSignatures(ctx, claims) {
-  const installPublicKey = loadInstallPublicKey(claims);
+  const signatureMode = MESSAGE_SIGNATURE_MODE;
   const accountKeyId = typeof claims.mskid === 'string' ? claims.mskid.trim() : '';
-  const shouldVerifyInstall = !!installPublicKey;
-  const shouldVerifyAccount = !shouldVerifyInstall && hasText(accountKeyId);
+  const shouldVerifyInstall = signatureMode === 'install';
+  const shouldVerifyAccount = signatureMode === 'account';
+  const installPublicKey = shouldVerifyInstall
+    ? loadInstallPublicKey(claims)
+    : null;
 
-  if (!shouldVerifyInstall && !shouldVerifyAccount) {
-    // ================================================================
-    // PRODUCTION NOTE:
-    // Some clients may unintentionally omit message signatures because
-    // their device could not generate the install key-pair (ipk). In that
-    // case the SDK may skip message signing entirely. How you handle those
-    // requests (reject, allow, or fallback to account-level signing) is a
-    // customer policy decision.
-    // ================================================================
-    logVerbose(ctx, 'signature', 'skip', 'No install ipk or account key id available.');
-    throw new Error('Message signing required but no signing claims present.');
+  logVerbose(ctx, 'signature', 'mode', `Using ${signatureMode} signature mode.`);
+
+  if (shouldVerifyInstall && !installPublicKey) {
+    logVerbose(ctx, 'signature', 'install', 'Install mode enabled but ipk claim missing.');
+    throw new Error('Install signature mode requires ipk claim.');
   }
 
-  if (shouldVerifyAccount && !APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET) {
-    logVerbose(ctx, 'signature', 'fail', 'Account message signing secret not configured.');
-    throw new Error('Account message signing secret not configured.');
-  }
-
-  if (shouldVerifyAccount && hasText(APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID)) {
-    if (APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID !== accountKeyId) {
-      logVerbose(
-        ctx,
-        'signature',
-        'account',
-        `Account key id mismatch (expected=${APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID}, got=${accountKeyId}).`
-      );
-      throw new Error('Account message signing key id mismatch.');
+  if (shouldVerifyAccount) {
+    if (!hasText(accountKeyId)) {
+      logVerbose(ctx, 'signature', 'account', 'Account mode enabled but mskid claim missing.');
+      throw new Error('Account signature mode requires mskid claim.');
+    }
+    if (!APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET) {
+      logVerbose(ctx, 'signature', 'fail', 'Account message signing secret not configured.');
+      throw new Error('Account message signing secret not configured.');
+    }
+    if (hasText(APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID)) {
+      if (APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID !== accountKeyId) {
+        logVerbose(
+          ctx,
+          'signature',
+          'account',
+          `Account key id mismatch (expected=${APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID}, got=${accountKeyId}).`
+        );
+        throw new Error('Account message signing key id mismatch.');
+      }
     }
   }
 
@@ -560,6 +570,8 @@ async function verifyMessageSignatures(ctx, claims) {
 
   const signatures = structuredHeaders.parseDictionary(signatureHeader);
   const signatureInputs = structuredHeaders.parseDictionary(signatureInputHeader);
+  const hasInstallEntry = signatures.has('install') || signatureInputs.has('install');
+  const hasAccountEntry = signatures.has('account') || signatureInputs.has('account');
   logVerbose(
     ctx,
     'signature',
@@ -569,6 +581,16 @@ async function verifyMessageSignatures(ctx, claims) {
 
   if (hasText(headerValue(ctx.headers, HEADER_NAMES.CONTENT_DIGEST))) {
     await verifyContentDigest(ctx);
+  }
+
+  if (shouldVerifyInstall && hasAccountEntry) {
+    logVerbose(ctx, 'signature', 'account', 'Account signature entry rejected in install mode.');
+    throw new Error('Account signature is disabled.');
+  }
+
+  if (shouldVerifyAccount && hasInstallEntry) {
+    logVerbose(ctx, 'signature', 'install', 'Install signature entry rejected in account mode.');
+    throw new Error('Install signature is disabled.');
   }
 
   if (shouldVerifyInstall) {
@@ -581,16 +603,6 @@ async function verifyMessageSignatures(ctx, claims) {
       installPublicKey,
       INSTALL_MESSAGE_SIGNING_ALGORITHM
     );
-    if (hasText(accountKeyId)) {
-      logVerbose(
-        ctx,
-        'signature',
-        'account',
-        'Skipping account signature because install ipk claim is present.'
-      );
-    }
-  } else if (signatures.has('install')) {
-    logVerbose(ctx, 'signature', 'install', 'Install signature present but ipk claim missing.');
   }
 
   if (shouldVerifyAccount) {
@@ -603,8 +615,6 @@ async function verifyMessageSignatures(ctx, claims) {
       APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET,
       ACCOUNT_MESSAGE_SIGNING_ALGORITHM
     );
-  } else if (signatures.has('account')) {
-    logVerbose(ctx, 'signature', 'account', 'Account signature present but mskid claim missing.');
   }
 }
 
