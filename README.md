@@ -209,8 +209,11 @@ Cache-Control: no-cache
 
 ## Approov Message Signing
 
-If your Approov account enables HTTP Message Signatures, this server can verify the signed request
-data for both **install** and **account** signing modes.
+If your Approov account enables HTTP Message Signatures, this server verifies exactly one signature
+mode at a time (configured by env):
+
+- `APPROOV_ENABLE_ACCOUNT_SIGNATURE=false` (default): **install-only** mode.
+- `APPROOV_ENABLE_ACCOUNT_SIGNATURE=true`: **account-only** mode (install signature disabled).
 
 - **Install message signing** uses the `ipk` claim inside the Approov token. When the claim is
   present, requests must include a `Signature` and `Signature-Input` header with an `install`
@@ -219,11 +222,12 @@ data for both **install** and **account** signing modes.
   - `APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64URL`
   - `APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_BASE64`
   - `APPROOV_ACCOUNT_MESSAGE_SIGNING_SECRET_RAW`
-  When enabled, requests must include an `account` signature entry in the same headers. If the
-  Approov token includes an `mskid` claim, the backend requires the account signature. You can
+  In account-only mode, requests must include an `account` signature entry and the token must
+  include an `mskid` claim. You can
   optionally enforce an expected key id via `APPROOV_ACCOUNT_MESSAGE_SIGNING_KEY_ID`.
 
-Both signatures must use `ecdsa-p256-sha256` and include `created` and `expires` parameters. You can
+Install signatures use `ecdsa-p256-sha256`. Account signatures use `hmac-sha256`.
+Both must include `created` and `expires` parameters. You can
 adjust the allowed clock skew with `APPROOV_MESSAGE_SIGNING_TOLERANCE_SECONDS` (default `60`).
 
 If a `Content-Digest` header is present, the server validates the body digest before verifying the
