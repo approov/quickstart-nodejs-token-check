@@ -118,6 +118,13 @@ const ROUTES = Object.freeze([
     requiresMessageSignature: true,
   },
   {
+    method: 'POST',
+    path: '/token-check-signature',
+    handler: tokenCheckSignatureHandler,
+    requiresApproov: true,
+    requiresMessageSignature: true,
+  },
+  {
     method: 'GET',
     path: '/token-binding',
     handler: tokenBindingHandler,

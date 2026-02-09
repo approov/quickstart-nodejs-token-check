@@ -4,7 +4,7 @@ This project provides a server-side example of Approov token verification for a 
 
  - `/unprotected` - no Approov token required.
  - `/token-check` - requires a valid Approov token.
- - `/token-check-signature` - requires a valid Approov token and HTTP message signature.
+ - `/token-check-signature` - requires a valid Approov token and HTTP message signature
  - `/token-binding` - requires a valid Approov token which is bound to a header value.
  - `/token-double-binding` - requires a valid Approov token which is bound to two header values.
 
