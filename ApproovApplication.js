@@ -90,31 +90,45 @@ const ROUTE_TABLE = new Map(
 const MIDDLEWARE = Object.freeze([approovTokenVerifier]);
 
 const server = http.createServer((req, res) => {
-  const requestInfo = parseRequest(req);
-  const route = ROUTE_TABLE.get(`${requestInfo.method} ${requestInfo.path}`);
-
-  if (!route) {
-    writeJson(res, 404, { error: 'not_found' });
-    return;
-  }
-
   const ctx = {
     req,
     res,
-    route,
-    method: requestInfo.method,
-    path: requestInfo.path,
+    route: null,
+    method: (req.method || 'GET').toUpperCase(),
+    path: '/',
     headers: req.headers,
     state: {},
   };
   initializeRequestState(ctx);
 
+  let requestInfo;
   try {
-    runMiddleware(ctx, MIDDLEWARE, route.handler);
+    requestInfo = parseRequest(req);
   } catch (error) {
-    console.error('Unhandled error:', error);
-    writeJson(res, 500, { error: 'server_error' });
+    handleRequestError(ctx, error);
+    return;
   }
+
+  ctx.method = requestInfo.method;
+  ctx.path = requestInfo.path;
+  ctx.route = ROUTE_TABLE.get(`${ctx.method} ${ctx.path}`);
+  ctx.state.logSummary = defaultSummaryForRoute(ctx.route, ctx.state);
+
+  if (!ctx.route) {
+    handleRequestError(
+      ctx,
+      createHttpError(404, 'not_found', 'Requested endpoint was not found.', {
+        logSummary: 'not_found',
+      })
+    );
+    return;
+  }
+
+  runMiddleware(ctx, MIDDLEWARE, ctx.route.handler, (error) => {
+    if (error) {
+      handleRequestError(ctx, error);
+    }
+  });
 });
 
 server.listen(HTTP_PORT, SERVER_HOSTNAME, () => {
@@ -211,7 +225,12 @@ function approovTokenVerifier(ctx, next) {
 
   const token = readApproovToken(ctx.headers);
   if (!hasText(token)) {
-    unauthorized(ctx, 'missing_approov_token', 'Missing Approov-Token header.');
+    next(
+      createUnauthorizedError(
+        'missing_approov_token',
+        'Missing Approov-Token header.'
+      )
+    );
     return;
   }
 
@@ -219,19 +238,23 @@ function approovTokenVerifier(ctx, next) {
   try {
     claims = verifyApproovToken(token);
   } catch (error) {
-    unauthorized(ctx, 'token_verification_failed', error.message);
+    next(
+      createUnauthorizedError('token_verification_failed', error.message)
+    );
     return;
   }
 
   const bindingHeaders = normalizeBindingHeaders(route.bindingHeaders);
   if (tokenBindingEnabled && bindingHeaders.length > 0) {
-    const bindingValue = extractBindingValue(ctx.headers, bindingHeaders);
-    if (!hasText(bindingValue)) {
-      unauthorized(ctx, 'missing_binding_header', 'Missing binding header.');
+    let bindingInput;
+    try {
+      bindingInput = constructTokenBindingInput(ctx.req, bindingHeaders);
+    } catch (error) {
+      next(error);
       return;
     }
-    if (!isBindingValid(bindingValue, claims)) {
-      unauthorized(ctx, 'binding_mismatch', 'Invalid token binding.');
+    if (!isBindingValid(bindingInput, claims)) {
+      next(createUnauthorizedError('binding_mismatch', 'Invalid token binding.'));
       return;
     }
   }
@@ -284,25 +307,43 @@ function normalizeBindingHeaders(bindingHeaders) {
     .filter((header) => hasText(header));
 }
 
-function extractBindingValue(headers, bindingHeaders) {
+function constructTokenBindingInput(req, bindingHeaders) {
+  if (!req || typeof req !== 'object' || !req.headers) {
+    throw createHttpError(
+      400,
+      'invalid_request',
+      'A valid HTTP request object is required for token binding validation.',
+      { logSummary: 'invalid_request' }
+    );
+  }
+
   const values = [];
   for (const header of bindingHeaders) {
-    const value = trimOrNull(headerValue(headers, header));
+    const value = trimOrNull(headerValue(req.headers, header));
     if (!hasText(value)) {
-      return null;
+      throw createUnauthorizedError(
+        'missing_binding_header',
+        `Missing binding header: ${header}.`
+      );
     }
     values.push(value);
   }
+
+  // Build a single string from header values in configured order.
   return values.join('');
 }
 
-function isBindingValid(bindingValue, claims) {
+function isBindingValid(bindingInput, claims) {
+  if (typeof bindingInput !== 'string') {
+    return false;
+  }
+
   const expected = typeof claims.pay === 'string' ? claims.pay.trim() : '';
   if (!hasText(expected)) {
     return false;
   }
 
-  const computed = hashBase64(bindingValue);
+  const computed = generateTokenBindingHash(bindingInput);
   return safeStringEqual(expected, computed);
 }
 
@@ -323,7 +364,7 @@ function initializeRequestState(ctx) {
   ctx.state.logSummary = defaultSummaryForRoute(ctx.route, ctx.state);
   ctx.res.on('finish', () => {
     const status = ctx.res.statusCode;
-    if (status === 200 || status === 401) {
+    if (status === 200 || status >= 400) {
       logRequestCompleted(ctx);
     }
   });
@@ -404,16 +445,47 @@ function headerValue(headers, name) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function runMiddleware(ctx, middlewares, handler) {
+function runMiddleware(ctx, middlewares, handler, done) {
   let index = -1;
+  const onComplete = typeof done === 'function' ? done : () => {};
 
-  const dispatch = () => {
-    index += 1;
-    if (index < middlewares.length) {
-      middlewares[index](ctx, dispatch);
+  const dispatch = (error) => {
+    if (error) {
+      onComplete(error);
       return;
     }
-    handler(ctx);
+
+    index += 1;
+    if (index > middlewares.length) {
+      onComplete(
+        createHttpError(
+          500,
+          'server_error',
+          'Middleware called next() more than once.',
+          { exposeMessage: false, logSummary: 'server_error' }
+        )
+      );
+      return;
+    }
+
+    const current =
+      index < middlewares.length ? middlewares[index] : handler;
+
+    try {
+      const result =
+        index < middlewares.length ? current(ctx, dispatch) : current(ctx);
+
+      if (result instanceof Error) {
+        onComplete(result);
+        return;
+      }
+
+      if (index >= middlewares.length) {
+        onComplete();
+      }
+    } catch (caught) {
+      onComplete(caught);
+    }
   };
 
   dispatch();
@@ -421,16 +493,74 @@ function runMiddleware(ctx, middlewares, handler) {
 
 function parseRequest(req) {
   const host = req.headers.host || `${SERVER_HOSTNAME}:${HTTP_PORT}`;
-  const url = new URL(req.url || '/', `http://${host}`);
+  let url;
+  try {
+    url = new URL(req.url || '/', `http://${host}`);
+  } catch (error) {
+    throw createHttpError(400, 'invalid_request', 'Invalid request URL.', {
+      logSummary: 'invalid_request',
+    });
+  }
   return {
     path: url.pathname,
     method: (req.method || 'GET').toUpperCase(),
   };
 }
 
-function unauthorized(ctx, reason, message) {
-  ctx.state.logSummary = `approov_failed:${reason}`;
-  writeJson(ctx.res, 401, { error: 'unauthorized', message });
+function handleRequestError(ctx, error) {
+  const appError = normalizeRequestError(error);
+  if (hasText(appError.logSummary)) {
+    ctx.state.logSummary = appError.logSummary;
+  }
+
+  if (ctx.res.headersSent) {
+    return;
+  }
+
+  if (appError.statusCode >= 500) {
+    console.error('Unhandled error:', error);
+  }
+
+  writeJson(ctx.res, appError.statusCode, {
+    error: appError.code,
+    message: appError.exposeMessage
+      ? appError.message
+      : 'Internal server error.',
+  });
+}
+
+function normalizeRequestError(error) {
+  if (error instanceof HttpError) {
+    return error;
+  }
+
+  return createHttpError(500, 'server_error', 'Internal server error.', {
+    exposeMessage: false,
+    logSummary: 'server_error',
+  });
+}
+
+function createUnauthorizedError(reason, message) {
+  return createHttpError(401, 'unauthorized', message, {
+    logSummary: `approov_failed:${reason}`,
+    details: { reason },
+  });
+}
+
+function createHttpError(statusCode, code, message, options) {
+  return new HttpError(statusCode, code, message, options);
+}
+
+class HttpError extends Error {
+  constructor(statusCode, code, message, options = {}) {
+    super(message);
+    this.name = 'HttpError';
+    this.statusCode = statusCode;
+    this.code = code;
+    this.details = options.details || null;
+    this.logSummary = options.logSummary || null;
+    this.exposeMessage = options.exposeMessage !== false;
+  }
 }
 
 function writeJson(res, statusCode, payload) {
@@ -499,10 +629,14 @@ function signHmac(value, secret) {
   return crypto.createHmac('sha256', secret).update(value).digest();
 }
 
-function hashBase64(value) {
+function generateTokenBindingHash(bindingInput) {
+  if (typeof bindingInput !== 'string') {
+    throw new TypeError('Token binding input must be a string.');
+  }
+
   return crypto
     .createHash('sha256')
-    .update(value, 'utf8')
+    .update(bindingInput, 'utf8')
     .digest('base64');
 }
 
