@@ -23,7 +23,7 @@ It uses route-configured headers, currently `Authorization` for single binding, 
 
 1. **Protected route requirements** are defined in the [ROUTES table](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L26-L84) via `requiresApproov` and `bindingHeaders`.
 
-2. **Protected routes are registered** in the [ROUTE_TABLE](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L86-L88) and resolved in the `http.createServer` request handler [`createServer`](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L92-L114).
+2. **Protected routes are registered** in the [ROUTE_TABLE](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L86-L88) and resolved by the `http.createServer` request handler.
 
 ## Approov Token Verification Flow
 
