@@ -9,21 +9,21 @@ This project provides a server-side example of Approov token verification for a 
 
 In this example, Approov token check is implemented in `ApproovApplication.js`. The responsibilities break down as follows:
 
-1. **JWT Approov Token validation (signature + expiry)** is in [verifyApproovToken](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L243-L257) and [validateExpiration](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L309-L319).
+1. **JWT Approov Token validation (signature + expiry)** is in [verifyApproovToken](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L266-L280) and [validateExpiration](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L350-L360).
 It verifies the HS256 signature and rejects tokens that are missing or past `exp`.
 
-2. **Token binding (pay + hash)** is handled by [isBindingValid](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L299-L307) and [generateTokenBindingHash](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L502-L507).
+2. **Token binding (pay + hash)** is handled by [isBindingValid](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L336-L348) and [generateTokenBindingHash](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L632-L641).
 It computes `base64(sha256(binding_value))` and compares it to `pay` with a timing-safe check.
 
-3. **Middleware enforcement** is done by [approovTokenVerifier](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L200-L241).
+3. **Middleware enforcement** is done by [approovTokenVerifier](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L214-L264).
 Requests without valid token or binding are rejected with `401`.
 
-4. **Binding value selection (what gets hashed)** is in [normalizeBindingHeaders](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L278-L285) and [constructTokenBindingInput](ApproovApplication.js#L287-L297).
+4. **Binding value selection (what gets hashed)** is in [normalizeBindingHeaders](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L301-L308) and [constructTokenBindingInput](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L310-L334).
 It uses route-configured headers, currently `Authorization` for single binding, or `Authorization` + `SessionId` for double binding.
 
-1. **Protected route requirements** are defined in the [ROUTES table](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L26-L84) via `requiresApproov` and `bindingHeaders`.
+5. **Protected route requirements** are defined in the [ROUTES](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L26-L84) via `requiresApproov` and `bindingHeaders`.
 
-2. **Protected routes are registered** in the [ROUTE_TABLE](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L86-L88) and resolved by the `http.createServer` request handler.
+6. **Protected routes are registered** in the [ROUTE_TABLE](https://github.com/approov/quickstart-nodejs-token-check/blob/refactor/nodejs-quickstart/ApproovApplication.js#L86-L88) and resolved by the `http.createServer` request handler.
 
 ## Approov Token Verification Flow
 
