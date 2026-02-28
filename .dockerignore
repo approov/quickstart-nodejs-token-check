@@ -1,0 +1,16 @@
+# Dependencies and package manager logs
+node_modules
+npm-debug.log*
+yarn-error.log*
+
+# Environment files (keep example for docs/reference)
+.env
+.env.*
+!.env.example
+
+# Local metadata and tooling artifacts
+.git
+.gitignore
+.DS_Store
+.config
+*.log
